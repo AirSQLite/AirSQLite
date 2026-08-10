@@ -1,0 +1,63 @@
+{
+  "name": "airsqlite",
+  "displayName": "AirSQLite",
+  "description": "Airtable-style grid, views, and linked records for local SQLite databases.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "publisher": "AirSQLite",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AirSQLite/AirSQLite"
+  },
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.125.0",
+    "node": ">=20"
+  },
+  "categories": [
+    "Data Science",
+    "Visualization"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "airtableForSqlite.editor",
+        "displayName": "Airtable for SQLite",
+        "selector": [
+          {
+            "filenamePattern": "*.db"
+          },
+          {
+            "filenamePattern": "*.sqlite"
+          },
+          {
+            "filenamePattern": "*.sqlite3"
+          }
+        ],
+        "priority": "default"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "node esbuild.config.js --production",
+    "build": "node esbuild.config.js",
+    "package": "vsce package --no-dependencies=false"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.1.2",
+    "@types/vscode": "^1.125.0",
+    "@types/ws": "^8.18.1",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.28.1",
+    "lucide-static": "^1.31.0",
+    "preact": "^10.29.8",
+    "typescript": "^7.0.2",
+    "ws": "^8.21.2"
+  }
+}

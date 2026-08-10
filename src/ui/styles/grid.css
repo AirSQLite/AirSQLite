@@ -1,0 +1,1386 @@
+/* Grid layout.
+ *
+ * Every row is exactly --afs-row-height tall. That is not a cosmetic choice: uniform row
+ * height is what lets scroll position map to a row index with one division instead of a
+ * measured-offset table, which is the difference between 100k rows scrolling smoothly and
+ * not scrolling at all. Long text is truncated here and shown in full in the detail panel. */
+
+.afs-app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* --- table tabs ---------------------------------------------------------- */
+
+.afs-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--afs-border);
+  flex: 0 0 auto;
+  scrollbar-width: thin;
+}
+
+.afs-tab {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--afs-muted);
+  font: inherit;
+  padding: 0.5rem 0.9rem;
+  cursor: pointer;
+  white-space: nowrap;
+  border-bottom: 2px solid transparent;
+}
+
+.afs-tab:hover {
+  color: var(--afs-fg);
+}
+
+.afs-tab[aria-selected='true'] {
+  color: var(--afs-fg);
+  border-bottom-color: var(--afs-accent);
+}
+
+.afs-tab:focus-visible {
+  outline: 1px solid var(--afs-accent);
+  outline-offset: -2px;
+}
+
+.afs-tab[draggable='true'] { cursor: grab; }
+.afs-tab--dragging { opacity: 0.4; }
+
+/* The insertion point: the gap the item drops into, not the tab it displaces. Which side the
+   line lands on is decided by the pointer's position relative to the tab's midpoint, so
+   dragging left and dragging right both show where the release will actually put it. */
+.afs-tab--drop-before { box-shadow: inset 2px 0 0 var(--afs-accent); }
+.afs-tab--drop-after { box-shadow: inset -2px 0 0 var(--afs-accent); }
+
+/* --- notices ------------------------------------------------------------- */
+
+.afs-notice {
+  flex: 0 0 auto;
+  padding: 0.4rem 0.9rem;
+  font-size: 0.92em;
+  color: var(--afs-muted);
+  background: var(--afs-info-bg);
+  border-bottom: 1px solid var(--afs-border);
+}
+
+/* --- grid ---------------------------------------------------------------- */
+
+.afs-grid {
+  --afs-row-height: 28px;
+  --afs-header-height: 30px;
+
+  position: relative;
+  flex: 1 1 auto;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  contain: strict;
+}
+
+.afs-grid__header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  height: var(--afs-header-height);
+  width: max-content;
+  min-width: 100%;
+  background: var(--afs-bg);
+  border-bottom: 1px solid var(--afs-border);
+}
+
+.afs-grid__canvas {
+  position: relative;
+  width: max-content;
+  min-width: 100%;
+}
+
+.afs-grid__window {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
+
+.afs-row {
+  display: flex;
+  height: var(--afs-row-height);
+  width: max-content;
+  min-width: 100%;
+}
+
+.afs-row:hover .afs-cell {
+  background: var(--afs-hover);
+}
+
+.afs-cell,
+.afs-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  /* Anchor for the conflict badge. Safe against the frozen-column trap below only because
+     `.afs-cell.afs-cell--frozen` is written with a doubled class — see the note there. */
+  position: relative;
+  padding: 0 0.5rem;
+  border-right: 1px solid var(--afs-border);
+  border-bottom: 1px solid var(--afs-border);
+  background: var(--afs-bg);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.afs-cell > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.afs-head {
+  font-weight: 600;
+  border-bottom: none;
+  gap: 0.4rem;
+}
+
+.afs-head__type {
+  color: var(--afs-muted);
+  font-weight: 400;
+  font-size: 0.85em;
+}
+
+/* Frozen columns stay put horizontally. Which columns are frozen is view config; the
+ * mechanism is layout, so it lives here.
+ *
+ * The doubled class is load-bearing. `.afs-head { position: relative }` appears later in this
+ * file for the header menu, and at equal specificity later wins — which silently unfroze every
+ * header until an e2e test caught it. */
+.afs-cell.afs-cell--frozen,
+.afs-head.afs-head--frozen {
+  position: sticky;
+  z-index: 1;
+}
+
+.afs-head.afs-head--frozen {
+  z-index: 3;
+}
+
+/* The header has to stop clipping while its menu is open, or the menu is not drawn at all.
+ *
+ * `.afs-head` sets `overflow: hidden` to keep long labels inside the column, and the menu is an
+ * absolutely-positioned child of it — so it was clipped out of existence. It rendered, it had a
+ * bounding box, and it was painted nowhere. `document.elementFromPoint` at its centre returned
+ * the cell behind it.
+ *
+ * No test caught it because Playwright's visibility check ignores ancestor overflow clipping and
+ * the suite clicked the trigger with `{force: true}`, which skips hit-testing. Sort, hide,
+ * freeze, and field type were all "verified" this way and none of them was reachable by hand.
+ *
+ * Doubled class for the same reason `.afs-head.afs-head--frozen` is — equal-specificity rules
+ * later in this file would otherwise win. See the note above it. */
+.afs-head.afs-head--menu-open {
+  overflow: visible;
+  z-index: 30;
+}
+
+.afs-cell--frozen-edge,
+.afs-head--frozen-edge {
+  border-right: 1px solid var(--afs-border);
+  box-shadow: 1px 0 0 var(--afs-border);
+}
+
+/* Reordering a column. The insertion line marks the gap the column drops into — this header
+   had no drag feedback at all before, so the only way to learn where a column would land was
+   to release it. `inset` rather than a border so the line does not change the column's width
+   mid-drag, which would shift every column right of it. */
+.afs-head--dragging { opacity: 0.4; }
+.afs-head--drop-before { box-shadow: inset 2px 0 0 var(--afs-accent); }
+.afs-head--drop-after { box-shadow: inset -2px 0 0 var(--afs-accent); }
+
+/* The pointer says "this click selects"; the I-beam says "this click types".
+ *
+ * Which is literally true now that the first click selects and the second edits — the cursor
+ * is the only thing that tells you which of those the next click will do. */
+.afs-cell {
+  cursor: pointer;
+}
+
+.afs-cell--cursor,
+.afs-cell--editing {
+  cursor: text;
+}
+
+/* Nothing to type into, whatever the selection state. */
+.afs-cell--system,
+.afs-cell--pending {
+  cursor: default;
+}
+
+/* The rowid column is ours, not the user's data — dimmed so it reads as chrome. */
+.afs-cell--system {
+  color: var(--afs-muted);
+  font-family: var(--afs-mono);
+  font-size: 0.9em;
+  justify-content: flex-end;
+}
+
+.afs-cell--number {
+  justify-content: flex-end;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A NULL and an empty string look identical to a person, so they look identical here. */
+.afs-cell--empty {
+  color: transparent;
+}
+
+/* A row whose chunk has not arrived yet. Shown rather than left blank so scrolling fast
+ * reads as "loading", not as "this table has holes in it". */
+.afs-cell--pending::after {
+  content: '';
+  display: block;
+  height: 0.65em;
+  width: 60%;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: 0.08;
+}
+
+/* --- empty and error states ---------------------------------------------- */
+
+.afs-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  flex: 1 1 auto;
+  color: var(--afs-muted);
+  padding: 2rem;
+  text-align: center;
+}
+
+
+/* --- buttons -------------------------------------------------------------- */
+
+.afs-button {
+  appearance: none;
+  font: inherit;
+  padding: 0.2rem 0.6rem;
+  border-radius: 3px;
+  border: 1px solid var(--afs-border);
+  background: var(--afs-button-secondary-bg);
+  color: var(--afs-button-secondary-fg);
+  cursor: pointer;
+}
+
+.afs-button:hover { border-color: var(--afs-accent); }
+
+.afs-button--primary {
+  background: var(--afs-button-bg);
+  color: var(--afs-button-fg);
+  border-color: transparent;
+}
+
+.afs-button--danger {
+  background: var(--afs-danger-bg);
+  color: var(--afs-danger-fg);
+  border-color: transparent;
+}
+
+.afs-button:disabled { opacity: 0.5; cursor: default; }
+
+/* --- selection ------------------------------------------------------------ */
+
+.afs-selection {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.35rem 0.9rem;
+  border-bottom: 1px solid var(--afs-border);
+  background: var(--afs-selection-soft);
+}
+
+.afs-selection__edit { display: flex; gap: 0.3rem; margin-left: auto; }
+
+.afs-selection__field,
+.afs-selection__value,
+.afs-menu__select,
+.afs-menu__input {
+  font: inherit;
+  padding: 0.15rem 0.3rem;
+  border: 1px solid var(--afs-border);
+  border-radius: 3px;
+  background: var(--afs-input-bg);
+  color: var(--afs-input-fg);
+}
+
+.afs-row--selected .afs-cell {
+  background: var(--afs-selection);
+}
+
+/* The row the detail panel is showing. Distinct from checkbox selection, which is what a
+ * bulk action applies to — conflating them would make opening a record look like arming a
+ * delete. Drawn on the left edge so it reads as a pointer rather than a highlight. */
+.afs-row--active .afs-cell {
+  background: color-mix(in srgb, var(--afs-accent) 7%, transparent);
+}
+
+.afs-row--active .afs-cell:first-child {
+  box-shadow: inset 2px 0 0 var(--afs-accent);
+}
+
+/* Frozen cells must stay opaque — semi-transparent row states let scrolled-under
+   content bleed through. Layer the tint over the solid base. */
+.afs-row:hover .afs-cell.afs-cell--frozen {
+  background: var(--afs-bg);
+  background-image: linear-gradient(var(--afs-hover), var(--afs-hover));
+}
+
+.afs-row--selected .afs-cell.afs-cell--frozen {
+  background: var(--afs-bg);
+  background-image: linear-gradient(var(--afs-selection), var(--afs-selection));
+}
+
+.afs-row--active .afs-cell.afs-cell--frozen {
+  background: var(--afs-bg);
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--afs-accent) 7%, transparent),
+    color-mix(in srgb, var(--afs-accent) 7%, transparent));
+}
+
+/* --- live reload ---------------------------------------------------------- */
+
+/* A changed cell flashes and fades. The point is to catch the eye of somebody watching an
+ * agent work, then get out of the way — a highlight that persists becomes wallpaper. */
+.afs-cell--changed {
+  animation: afs-flash 2s ease-out;
+}
+
+.afs-row--added .afs-cell {
+  animation: afs-flash 2s ease-out;
+}
+
+@keyframes afs-flash {
+  from { background: color-mix(in srgb, var(--afs-accent) 38%, transparent); }
+  to   { background: transparent; }
+}
+
+/* An external write landed on the cell being edited. The draft is safe; this says the value
+ * underneath moved, so committing will overwrite something never seen. */
+.afs-cell--conflict {
+  box-shadow: inset 0 0 0 2px var(--afs-warning);
+}
+
+.afs-conflict {
+  position: absolute;
+  right: 2px;
+  top: 0;
+  z-index: 3;
+  font-size: 11px;
+  line-height: 20px;
+  color: var(--afs-warning);
+  pointer-events: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .afs-cell--changed,
+  .afs-row--added .afs-cell {
+    animation: none;
+    background: color-mix(in srgb, var(--afs-accent) 20%, transparent);
+  }
+}
+
+.afs-cell--select,
+.afs-head .afs-checkbox { justify-content: center; }
+
+.afs-cell--select {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* Quiet until you look at the row, so 200 of these do not compete with the data — but faded
+ * rather than hidden. `visibility: hidden` would take it out of the tab order and out of
+ * reach of anything that cannot hover, which is a real control to lose for a visual effect. */
+.afs-expand {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  color: var(--afs-muted);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.35;
+}
+
+.afs-row:hover .afs-expand,
+.afs-row--active .afs-expand,
+.afs-expand:focus-visible {
+  opacity: 1;
+}
+
+.afs-expand:hover { color: var(--afs-fg); opacity: 1; }
+
+.afs-checkbox, .afs-toggle { margin: 0; cursor: pointer; }
+
+.afs-toggle { accent-color: var(--afs-accent); }
+
+/* --- cell content --------------------------------------------------------- */
+
+.afs-tags { display: flex; gap: 0.25rem; overflow: hidden; }
+
+.afs-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 10px;
+  font-size: 0.88em;
+  white-space: nowrap;
+  background: var(--afs-badge-bg);
+  color: var(--afs-badge-fg);
+}
+
+.afs-tag__remove {
+  appearance: none; border: none; background: none; cursor: pointer;
+  color: inherit; padding: 0; line-height: 1;
+}
+
+.afs-rating { display: flex; gap: 1px; cursor: pointer; }
+.afs-star { color: var(--afs-muted); opacity: 0.3; font-size: 0.95em; }
+.afs-star--on { color: var(--afs-accent); opacity: 1; }
+
+.afs-link-cell { display: flex; align-items: center; gap: 0.3rem; overflow: hidden; }
+.afs-link-cell a { color: var(--afs-link); overflow: hidden; text-overflow: ellipsis; }
+
+.afs-copy {
+  appearance: none; border: none; background: none; cursor: pointer;
+  color: var(--afs-muted); padding: 0; opacity: 0;
+}
+
+.afs-cell:hover .afs-copy { opacity: 1; }
+
+/* --- expanded cell preview ------------------------------------------------ */
+
+/* The cell has to stop clipping for the popout to escape it — same trick the long-text editor
+   uses. Kept to the selected cell only, so the grid is not full of things hanging out of it. */
+.afs-cell--peek { overflow: visible; }
+
+.afs-cell__popout {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 6;
+  min-width: 100%;
+  max-width: 32rem;
+  max-height: 14rem;
+  /* Scrollable, so a value taller than the popout can still be read without opening an editor.
+     `contain` stops the wheel chaining into the grid the instant you hit the bottom, which
+     otherwise jumps the rows underneath while you are still reading. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.3rem 0.5rem;
+  border: 2px solid var(--afs-accent);
+  border-radius: 2px;
+  background: var(--afs-surface);
+  color: var(--afs-fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  box-shadow: 0 4px 14px var(--afs-shadow);
+}
+
+/* Set by measurement in Grid.tsx when the popout would run off the right of the grid. */
+.afs-cell__popout--flip {
+  left: auto;
+  right: 0;
+}
+
+/* --- editors -------------------------------------------------------------- */
+
+.afs-cell--editing { padding: 0; overflow: visible; }
+
+.afs-editor {
+  font: inherit;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0 0.4rem;
+  border: 2px solid var(--afs-accent);
+  border-radius: 0;
+  background: var(--afs-input-bg);
+  color: var(--afs-input-fg);
+  outline: none;
+}
+
+/* Long text needs room the row height cannot give it, so the editor escapes the cell. */
+.afs-editor--long {
+  position: absolute;
+  z-index: 5;
+  min-height: 6rem;
+  height: auto;
+  padding: 0.3rem 0.4rem;
+  resize: vertical;
+}
+
+.afs-editor--tags {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  overflow-x: auto;
+}
+
+.afs-editor__tag-input {
+  font: inherit; border: none; outline: none; background: transparent;
+  color: inherit; min-width: 4rem; flex: 1 1 auto;
+}
+
+/* --- column header menu --------------------------------------------------- */
+
+.afs-head { position: relative; }
+
+.afs-head__sort { color: var(--afs-accent); font-weight: 400; }
+
+/* Present only when a field has a description, so the icon itself is the signal. `help` rather
+   than `pointer`: it reveals on hover and does nothing on click. */
+.afs-head__type-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  color: var(--afs-muted);
+  margin-right: 0.3rem;
+}
+.afs-head__type-icon svg,
+.afs-head__menu svg,
+.afs-head__sort svg,
+.afs-head__info svg,
+.afs-views__hamburger svg,
+.afs-views__caret svg,
+.afs-views__hint svg,
+.afs-tab__info svg,
+.afs-tab__caret svg,
+.afs-group__chevron svg,
+.afs-menu__item-icon svg { display: block; }
+
+.afs-head__info { color: var(--afs-muted); font-weight: 400; cursor: help; flex: 0 0 auto; display: inline-flex; align-items: center; }
+
+/* The label yields, never the caret.
+ *
+ * Without this the caret is pushed out of the header's box by a long column name and clipped
+ * away by `overflow: hidden` — so on a real table, half the columns have no menu button at all
+ * and the ones that do look identical to the ones that do not. Every fixture column here is
+ * short enough to hide it (`name`, `email`, `notes`); `core_responsibilities` is not. */
+.afs-head__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Faded rather than hidden, for the same reason the row expand control is — a control at
+   opacity 0 is one nobody can find, and "I clicked where I thought it was" is indistinguishable
+   from "the button does nothing". */
+.afs-head__menu {
+  appearance: none; border: none; background: none; cursor: pointer;
+  color: var(--afs-muted); margin-left: auto; padding: 0 0.2rem; opacity: 0.4;
+  flex: 0 0 auto; display: inline-flex; align-items: center;
+}
+
+.afs-head__sort { flex: 0 0 auto; display: inline-flex; align-items: center; }
+
+.afs-head:hover .afs-head__menu,
+.afs-head__menu:focus-visible { opacity: 1; }
+
+.afs-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 20;
+  min-width: 15rem;
+  padding: 0.4rem;
+  font-weight: 400;
+  border: 1px solid var(--afs-border);
+  border-radius: 4px;
+  background: var(--afs-menu-bg);
+  box-shadow: 0 4px 14px var(--afs-shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.afs-menu__section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--afs-border);
+}
+
+.afs-menu__section:last-child { border-bottom: none; padding-bottom: 0; }
+
+.afs-menu__item {
+  appearance: none; border: none; background: none; cursor: pointer;
+  font: inherit; color: inherit; text-align: left; padding: 0.25rem 0.35rem; border-radius: 3px;
+  display: flex; align-items: center; gap: 0.4rem;
+}
+.afs-menu__item-icon {
+  flex: 0 0 auto; display: inline-flex; align-items: center;
+  color: var(--afs-muted);
+}
+.afs-menu__item-icon svg { display: block; }
+
+.afs-menu__item:hover { background: var(--afs-hover-strong); }
+.afs-menu__item[aria-pressed='true'] { color: var(--afs-accent); }
+
+.afs-menu__label { display: flex; flex-direction: column; gap: 0.2rem; color: var(--afs-muted); font-size: 0.9em; }
+.afs-menu__hint { color: var(--afs-muted); font-size: 0.9em; font-style: italic; margin: 0; }
+
+.afs-menu__toggle-row {
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.3rem 0.6rem; font-size: 0.9em; cursor: pointer;
+}
+.afs-menu__toggle-row:hover { background: var(--afs-hover); }
+
+.afs-menu__confirm {
+  display: flex; flex-direction: column; gap: 0.3rem;
+  padding: 0.3rem 0;
+}
+
+.afs-menu__comma-list {
+  max-height: 120px;
+  overflow-y: auto;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.85em;
+  color: var(--afs-muted);
+}
+
+.afs-menu__comma-item {
+  padding: 0.15rem 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --- modal ---------------------------------------------------------------- */
+
+.afs-modal-backdrop {
+  position: fixed; inset: 0; z-index: 50;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--afs-backdrop);
+}
+
+.afs-modal {
+  min-width: 20rem; max-width: 28rem;
+  display: flex; flex-direction: column; gap: 0.6rem;
+  padding: 1rem;
+  border-radius: 6px;
+  border: 1px solid var(--afs-border);
+  background: var(--afs-surface);
+  box-shadow: 0 8px 30px var(--afs-shadow-strong);
+}
+
+.afs-modal__detail { margin: 0; color: var(--afs-muted); }
+.afs-modal__actions { display: flex; justify-content: flex-end; gap: 0.4rem; }
+
+/* --- toasts --------------------------------------------------------------- */
+
+.afs-toasts {
+  position: fixed; right: 1rem; bottom: 2.4rem; z-index: 60;
+  display: flex; flex-direction: column; gap: 0.4rem; max-width: 26rem;
+}
+
+.afs-toast {
+  appearance: none; font: inherit; text-align: left; cursor: pointer;
+  padding: 0.5rem 0.7rem;
+  border-radius: 4px;
+  border: 1px solid var(--afs-border);
+  background: var(--afs-surface);
+  color: var(--afs-fg);
+  box-shadow: 0 4px 14px var(--afs-shadow);
+}
+
+.afs-toast--error {
+  border-color: var(--afs-danger-border);
+  background: var(--afs-danger-bg);
+  color: var(--afs-danger-fg);
+}
+
+/* --- toolbar -------------------------------------------------------------- */
+
+.afs-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.9rem;
+  border-bottom: 1px solid var(--afs-border);
+}
+
+/* Relative, because the views list and the view menu are absolutely positioned inside it. */
+.afs-views { display: flex; align-items: center; gap: 0.35rem; position: relative; }
+.afs-views__naming { display: flex; gap: 0.3rem; }
+.afs-views__cancel { padding: 0.2rem 0.45rem; line-height: 1; }
+
+/* Not a button: a toggle for the panel beside the grid. It gets the accent when the panel is
+   open, which is the only state worth showing — the panel itself is the other half of the
+   feedback and it is right there. */
+.afs-views__hamburger {
+  appearance: none; border: none; background: none; cursor: pointer;
+  color: var(--afs-muted); font: inherit; line-height: 1;
+  padding: 0.25rem 0.4rem; border-radius: 3px; flex: 0 0 auto;
+  display: inline-flex; align-items: center;
+}
+
+.afs-views__hamburger:hover { background: var(--afs-hover-strong); color: var(--afs-fg); }
+.afs-views__hamburger--on { color: var(--afs-accent); background: var(--afs-hover); }
+
+/* Inherits `.afs-head__menu` — the column header caret — so the two read as the same
+   affordance. `margin-left` is reset because that rule pushes the header caret to the far
+   right, and here the caret belongs against the name it opens. */
+.afs-views__caret { margin-left: 0; opacity: 1; }
+.afs-views__caret:hover { color: var(--afs-fg); }
+.afs-views__caret:disabled { opacity: 0.35; cursor: default; }
+
+/* The active view's name reads as a label, not a control — the controls are the two buttons
+   either side of it. Airtable does the same, and it is what stops the bar looking like a form. */
+.afs-views__name { font-weight: 600; padding: 0 0.15rem; }
+.afs-views__hint { color: var(--afs-muted); cursor: help; display: inline-flex; align-items: center; }
+
+/* Pushed right so it sits under the caret rather than over the name it belongs to. */
+.afs-views__menu { top: calc(100% + 4px); left: 2rem; }
+
+.afs-menu__divider { height: 1px; background: var(--afs-border); margin: 0.15rem 0; }
+.afs-menu__item--on { color: var(--afs-accent); font-weight: 600; }
+.afs-menu__item--danger { color: var(--afs-danger-text); }
+
+.afs-type-picker__toggle {
+  appearance: none; border: 1px solid var(--afs-border); border-radius: 4px;
+  background: var(--afs-bg); cursor: pointer;
+  font: inherit; color: inherit;
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.35rem 0.5rem; width: 100%;
+}
+.afs-type-picker__toggle:hover { border-color: var(--afs-accent); }
+.afs-type-picker__toggle:disabled { opacity: 0.5; cursor: default; }
+.afs-type-picker__caret { margin-left: auto; color: var(--afs-muted); display: inline-flex; align-items: center; }
+.afs-type-picker__caret svg { display: block; }
+
+.afs-type-list {
+  display: flex; flex-direction: column; gap: 1px;
+  max-height: 14rem; overflow-y: auto;
+}
+.afs-type-list__item {
+  appearance: none; border: none; background: none; cursor: pointer;
+  font: inherit; color: inherit; text-align: left;
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.3rem 0.35rem; border-radius: 3px;
+}
+.afs-type-list__item:hover { background: var(--afs-hover-strong); }
+.afs-type-list__item--active { color: var(--afs-accent); font-weight: 600; }
+.afs-type-list__item--highlight { background: var(--afs-hover-strong); }
+.afs-type-list__item:disabled { opacity: 0.5; cursor: default; }
+.afs-type-list__icon {
+  flex: 0 0 auto; display: inline-flex; align-items: center;
+  color: var(--afs-muted);
+}
+.afs-type-list__item--active .afs-type-list__icon { color: var(--afs-accent); }
+
+.afs-views__input,
+.afs-search__input {
+  font: inherit;
+  padding: 0.15rem 0.35rem;
+  border: 1px solid var(--afs-border);
+  border-radius: 3px;
+  background: var(--afs-input-bg);
+  color: var(--afs-input-fg);
+}
+
+.afs-search { margin-left: auto; }
+.afs-search__input { min-width: 14rem; }
+
+.afs-columns-menu { position: relative; }
+
+.afs-menu--anchored { top: calc(100% + 4px); max-height: 20rem; overflow-y: auto; }
+
+/* Sticky so it survives scrolling a forty-column list — a filter box you have to scroll back
+   up to reach is a filter box you stop using. */
+.afs-menu__filter {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  width: 100%;
+  margin-bottom: 0.25rem;
+}
+
+.afs-menu__check {
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.15rem 0.25rem; cursor: pointer;
+}
+
+/* --- filter builder ------------------------------------------------------- */
+
+.afs-filter {
+  flex: 0 0 auto;
+  max-height: 40vh;
+  overflow-y: auto;
+  padding: 0.5rem 0.9rem 0.7rem;
+  border-bottom: 1px solid var(--afs-border);
+  background: var(--afs-surface);
+}
+
+.afs-filter__head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
+.afs-filter__head strong { margin-right: auto; }
+
+.afs-filter__group { display: flex; flex-direction: column; gap: 0.3rem; }
+
+/* Nested groups are indented and ruled, so precedence is visible rather than implied. */
+.afs-filter__group .afs-filter__group {
+  margin-left: 0.5rem;
+  padding-left: 0.5rem;
+  border-left: 2px solid var(--afs-border);
+}
+
+.afs-filter__row { display: flex; align-items: flex-start; gap: 0.4rem; }
+.afs-filter__joiner { min-width: 4rem; padding-top: 0.2rem; color: var(--afs-muted); }
+.afs-filter__conjunction-echo { font-style: italic; }
+.afs-filter__condition { display: flex; gap: 0.3rem; flex-wrap: wrap; }
+.afs-filter__pair { display: flex; gap: 0.3rem; }
+.afs-filter__actions { display: flex; gap: 0.3rem; margin-top: 0.2rem; }
+
+.afs-filter__column,
+.afs-filter__operator,
+.afs-filter__value,
+.afs-filter__conjunction {
+  font: inherit;
+  padding: 0.15rem 0.3rem;
+  border: 1px solid var(--afs-border);
+  border-radius: 3px;
+  background: var(--afs-input-bg);
+  color: var(--afs-input-fg);
+}
+
+.afs-filter__remove {
+  appearance: none; border: none; background: none; cursor: pointer;
+  color: var(--afs-muted); padding: 0 0.2rem; font-size: 1.1em; line-height: 1.4;
+}
+
+/* --- resize and freeze handles -------------------------------------------- */
+
+.afs-head__resize {
+  position: absolute;
+  top: 0;
+  right: -2px;
+  width: 5px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 4;
+}
+
+.afs-head__resize:hover { background: var(--afs-accent); }
+
+.afs-freeze-bar {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  width: 8px;
+  margin-left: -4px;
+  cursor: ew-resize;
+  z-index: 6;
+  background: transparent;
+  pointer-events: auto;
+}
+
+.afs-freeze-bar::after {
+  content: '';
+  position: sticky;
+  top: 0;
+  display: block;
+  width: 3px;
+  height: 100vh;
+  margin: 0 auto;
+  background: var(--afs-accent);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.afs-freeze-bar:hover::after,
+.afs-freeze-bar:active::after { opacity: 0.6; }
+
+.afs-head[draggable='true'] { cursor: grab; }
+
+.afs-menu__note {
+  padding: 0.4rem 0.6rem;
+  color: var(--afs-muted);
+  font-size: 0.9em;
+  border-bottom: 1px solid var(--afs-border);
+}
+
+/* --- group headers -------------------------------------------------------- */
+
+/* Exactly one row tall — the scroll arithmetic divides by a single row height, so a taller
+ * header would need a measured-offset table, which is what virtual scroll exists to avoid. */
+.afs-group {
+  background: var(--afs-band);
+  border-bottom: 1px solid var(--afs-border);
+  align-items: stretch;
+}
+
+.afs-group__toggle {
+  /* Sticky-left: the label is what tells you which group you are inside, and losing it when
+     you scroll right defeats the point of having it. */
+  position: sticky;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding-right: 0.6rem;
+  border: none;
+  background: none;
+  color: var(--afs-fg);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.afs-group__chevron {
+  color: var(--afs-muted);
+  font-size: 0.85em;
+  width: 0.8em;
+}
+
+.afs-group__column {
+  color: var(--afs-muted);
+  font-size: 0.9em;
+}
+
+.afs-group__value {
+  font-weight: 600;
+  max-width: 22rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.afs-group__count {
+  color: var(--afs-muted);
+  font-size: 0.9em;
+  padding: 0 0.35rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--afs-fg) 10%, transparent);
+}
+
+/* --- summary bar ---------------------------------------------------------- */
+
+/* Scrolls horizontally in lockstep with the grid — a total that is not under the column it
+   totals is a number you have to match up by hand. The scrollbar is hidden because the grid's
+   own is the one to drag; this bar only ever follows. */
+.afs-summary {
+  flex: 0 0 auto;
+  display: flex;
+  height: 26px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  background: var(--afs-bg);
+}
+
+.afs-summary::-webkit-scrollbar { display: none; }
+
+/* The summary menu is fixed-positioned, because the bar above clips on both axes the moment it
+   scrolls on one — so a menu inside it is painted nowhere. Its coordinates come from measuring
+   the button in SummaryBar.tsx. */
+.afs-menu--fixed {
+  position: fixed;
+  /* Resetting top and right is load-bearing. `.afs-menu` sets `top: 100%`, which under absolute
+     positioning means "below my parent" and under fixed means 100% of the *viewport* — 720px
+     down. With both `top` and the inline `bottom` set and height auto, the box stretches between
+     two contradictory edges and collapses to a sliver at the bottom of the screen. */
+  top: auto;
+  right: auto;
+  z-index: 40;
+}
+
+.afs-summary__lead {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0 0.4rem;
+  border-top: 1px solid var(--afs-border);
+}
+
+.afs-summary__lead--frozen {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--afs-bg);
+}
+
+.afs-summary__add {
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--afs-muted);
+  font: inherit;
+  font-size: 1.1em;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.2rem;
+  border-radius: 3px;
+}
+
+.afs-summary__add:hover { background: var(--afs-hover); color: var(--afs-fg); }
+
+.afs-summary__count {
+  color: var(--afs-muted);
+  font-size: 0.85em;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.afs-summary__cell {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  border-top: 1px solid var(--afs-border);
+  border-right: 1px solid var(--afs-border);
+  overflow: visible;
+}
+
+.afs-summary__cell.afs-summary__cell--frozen {
+  position: sticky;
+  z-index: 1;
+  background: var(--afs-bg);
+}
+
+.afs-summary__button {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  width: 100%;
+  padding: 0 0.5rem;
+  border: none;
+  background: none;
+  color: var(--afs-fg);
+  font: inherit;
+  font-size: 0.9em;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.afs-summary__button:hover { background: var(--afs-hover); }
+.afs-summary__button:disabled { cursor: default; }
+.afs-summary__button:disabled:hover { background: none; }
+
+.afs-summary__label { color: var(--afs-muted); font-size: 0.9em; }
+.afs-summary__value { font-variant-numeric: tabular-nums; }
+.afs-summary__empty { color: var(--afs-muted); opacity: 0.5; }
+
+/* Opens upward — it is anchored to the bottom bar, and a menu opening off-screen is a menu
+ * with no options. */
+.afs-menu--up {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  z-index: 30;
+}
+
+/* --- keyboard cursor and range ------------------------------------------- */
+
+/* Drawn inset so it does not shift the cell or overlap its neighbour's border. */
+.afs-cell--cursor {
+  box-shadow: inset 0 0 0 2px var(--afs-accent);
+  z-index: 2;
+}
+
+.afs-cell--range {
+  background: color-mix(in srgb, var(--afs-accent) 14%, transparent);
+}
+
+/* The grid itself takes focus for keyboard navigation; the ring goes on the cursor cell
+ * rather than the whole scroller, which would draw a box around the entire table. */
+.afs-grid:focus { outline: none; }
+.afs-grid:focus-visible { outline: none; }
+
+/* The trailing actions column. Last, so it disturbs no frozen offset and no cursor index. */
+.afs-cell--actions {
+  justify-content: flex-start;
+  gap: 4px;
+  overflow: hidden;
+}
+
+/* A header whose *name* matches the table search.
+ *
+ * Row filtering is unchanged — that still matches cell values in SQL. This is the other half of
+ * the same question on a wide table: "where is the column called company_domain", which was
+ * previously answerable only by reading forty headers left to right. */
+.afs-head--match {
+  background: color-mix(in srgb, var(--afs-accent) 18%, var(--afs-bg));
+  box-shadow: inset 0 -2px 0 var(--afs-accent);
+}
+
+/* --- select-field options ------------------------------------------------ */
+
+.afs-choices { display: flex; flex-direction: column; gap: 0.3rem; }
+.afs-choices__bar { display: flex; align-items: center; gap: 0.25rem; }
+.afs-choices__bar .afs-menu__label { flex: 1 1 auto; }
+.afs-choices__mini { padding: 0.1rem 0.35rem; font-size: 0.85em; line-height: 1.4; }
+
+/* Capped and scrollable. A forty-option field would otherwise push the field-type dropdown
+   off the bottom of the menu, which is how a list becomes a trap. */
+.afs-choices__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 13rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.afs-choices__row {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 1px 2px;
+  border-radius: 3px;
+}
+
+.afs-choices__row:hover { background: var(--afs-hover); }
+.afs-choices__row[draggable='true'] { cursor: grab; }
+.afs-choices__row--dragging { opacity: 0.4; }
+
+/* Vertical list, so the insertion line is horizontal — same primitive as tabs and headers,
+   different axis. */
+.afs-choices__row--drop-before { box-shadow: inset 0 2px 0 var(--afs-accent); }
+.afs-choices__row--drop-after { box-shadow: inset 0 -2px 0 var(--afs-accent); }
+
+.afs-choices__grip { color: var(--afs-muted); cursor: grab; flex: 0 0 auto; font-size: 0.85em; }
+
+/* The swatch *is* the picker: a select whose background is the color it holds, so changing a
+   color costs one click rather than opening a palette somewhere else. */
+.afs-choices__color {
+  flex: 0 0 auto;
+  width: 1.5rem;
+  height: 1.15rem;
+  border: 1px solid var(--afs-border);
+  border-radius: 3px;
+  font-size: 0;
+  color: transparent;
+  cursor: pointer;
+  appearance: none;
+}
+
+.afs-choices__color option { color: var(--afs-fg); font-size: 1rem; }
+
+.afs-choices__value {
+  flex: 1 1 auto;
+  appearance: none;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: text;
+  padding: 0.1rem 0.2rem;
+  border-radius: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.afs-choices__value:hover { background: var(--afs-hover-strong); }
+.afs-choices__input { flex: 1 1 auto; font: inherit; padding: 0.05rem 0.2rem;
+  border: 1px solid var(--afs-accent); border-radius: 3px;
+  background: var(--afs-input-bg); color: var(--afs-input-fg); min-width: 0; }
+
+.afs-choices__remove {
+  appearance: none; border: none; background: none; cursor: pointer;
+  color: var(--afs-muted); font: inherit; line-height: 1; padding: 0.1rem 0.25rem;
+  flex: 0 0 auto; border-radius: 3px;
+}
+
+.afs-choices__remove:hover { background: var(--afs-hover-strong); color: var(--afs-fg); }
+
+.afs-choices__setting {
+  display: flex; align-items: center; gap: 0.35rem;
+  color: var(--afs-muted); font-size: 0.9em;
+}
+
+.afs-choices__default-select {
+  flex: 1 1 auto; min-width: 0; font: inherit;
+  padding: 0.1rem 0.25rem; border: 1px solid var(--afs-border); border-radius: 3px;
+  background: var(--afs-input-bg); color: var(--afs-input-fg);
+}
+
+.afs-choices__toggle { display: flex; align-items: center; gap: 0.35rem; color: var(--afs-muted); font-size: 0.9em; }
+
+/* The row ordinal in the select gutter.
+   Counts positions in the *view*, so it renumbers on sort, filter, and group — unlike the
+   rowid beside it, which is the record's identity and never moves. Tabular figures so the
+   column does not jitter between 9 and 10, and muted so it reads as chrome rather than data. */
+.afs-rownum {
+  flex: 0 0 auto;
+  min-width: 1.6em;
+  text-align: right;
+  color: var(--afs-muted);
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+/* --- sort menu ----------------------------------------------------------- */
+
+.afs-sort__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+.afs-sort__row { display: flex; align-items: center; gap: 0.3rem; }
+.afs-sort__ordinal { color: var(--afs-muted); font-size: 0.9em; flex: 0 0 4.2rem; }
+.afs-sort__column { flex: 1 1 auto; min-width: 0; }
+
+.afs-sort__column,
+.afs-sort__direction {
+  font: inherit;
+  padding: 0.1rem 0.25rem;
+  border: 1px solid var(--afs-border);
+  border-radius: 3px;
+  background: var(--afs-input-bg);
+  color: var(--afs-input-fg);
+}
+
+.afs-sort__remove {
+  appearance: none; border: none; background: none; cursor: pointer;
+  color: var(--afs-muted); font: inherit; line-height: 1; padding: 0.1rem 0.3rem;
+  border-radius: 3px; flex: 0 0 auto;
+}
+
+.afs-sort__remove:hover { background: var(--afs-hover-strong); color: var(--afs-fg); }
+.afs-sort__actions { display: flex; gap: 0.3rem; }
+
+/* The filter builder is wider than a column list, and it is now a dropdown rather than a panel
+   that pushed the grid down when it opened. */
+.afs-menu--filter { min-width: 32rem; max-width: 90vw; }
+.afs-menu--filter .afs-filter { border: none; padding: 0; }
+
+/* --- schema editing ------------------------------------------------------ */
+
+.afs-tabs__naming { display: flex; align-items: center; gap: 0.3rem; padding: 0 0.4rem; }
+
+/* The add-table control sits in the tab strip but is not a tab: no selected state, no bottom
+   border to claim one, and never the thing keyboard tab-navigation lands on first. */
+.afs-tab--add { color: var(--afs-muted); font-weight: 600; padding: 0.5rem 0.7rem; }
+.afs-tab--add:hover { color: var(--afs-fg); background: var(--afs-hover); }
+
+.afs-menu--anchored .afs-menu__select { width: 100%; }
+
+/* --- views panel --------------------------------------------------------- */
+
+/* A panel beside the grid, not a menu over it.
+ *
+ * Switching between views to compare them means returning to the list repeatedly, and a
+ * dropdown that dismisses on the first click into the grid makes every trip a two-click round.
+ * So it takes width from the grid instead of covering it — nothing is hidden behind it — and
+ * stays until the hamburger is clicked again. */
+.afs-views-panel {
+  flex: 0 0 14rem;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--afs-border);
+  background: var(--afs-surface);
+  overflow: hidden;
+}
+
+.afs-views-panel__head {
+  flex: 0 0 auto;
+  padding: 0.5rem 0.7rem;
+  font-weight: 600;
+  font-size: 0.9em;
+  color: var(--afs-muted);
+  border-bottom: 1px solid var(--afs-border);
+}
+
+.afs-views-panel__list { flex: 1 1 auto; overflow-y: auto; padding: 0.3rem; display: flex; flex-direction: column; gap: 1px; }
+
+.afs-views-panel__item {
+  appearance: none; border: none; background: none; cursor: pointer;
+  font: inherit; color: inherit; text-align: left;
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.3rem 0.45rem; border-radius: 3px;
+}
+
+.afs-views-panel__item:hover { background: var(--afs-hover-strong); }
+
+/* The active view is marked by a filled row rather than a checkmark: the list is short and
+   scanned, so the eye should find it without reading. */
+.afs-views-panel__item--on { background: var(--afs-selection); font-weight: 600; }
+
+.afs-views-panel__name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.afs-views-panel__tag {
+  flex: 0 0 auto; font-size: 0.75em; color: var(--afs-muted);
+  border: 1px solid var(--afs-border); border-radius: 3px; padding: 0 0.25rem;
+}
+
+.afs-views-panel__new {
+  flex: 0 0 auto;
+  appearance: none; border: none; background: none; cursor: pointer;
+  font: inherit; color: var(--afs-muted); text-align: left;
+  padding: 0.45rem 0.7rem; border-top: 1px solid var(--afs-border);
+}
+
+.afs-views-panel__new:hover { color: var(--afs-fg); background: var(--afs-hover); }
+
+.afs-views-panel__naming {
+  flex: 0 0 auto; display: flex; gap: 0.3rem; padding: 0.4rem;
+  border-top: 1px solid var(--afs-border);
+}
+
+.afs-views-panel__naming .afs-views__input { flex: 1 1 auto; min-width: 0; }
+
+/* --- table tab menus and add-field --------------------------------------- */
+
+/* The tab and its chrome share a wrapper so the caret and info icon sit inside the drag
+   target and the menu can anchor to it. */
+.afs-tab-wrap { position: relative; display: flex; align-items: center; flex: 0 0 auto; }
+.afs-tab-wrap[draggable='true'] { cursor: grab; }
+.afs-tab-wrap .afs-tab { cursor: pointer; }
+
+.afs-tab__info { color: var(--afs-muted); cursor: help; padding-right: 0.2rem; display: inline-flex; align-items: center; }
+
+/* Same affordance as the column header caret and the view caret — one glyph, no button box. */
+.afs-tab__caret { margin-left: 0; opacity: 0.6; padding: 0 0.35rem 0 0; }
+.afs-tab-wrap:hover .afs-tab__caret { opacity: 1; }
+.afs-tab__menu { top: 100%; left: 0.4rem; }
+
+/* The trailing add-field header. A header with no cells beneath it: the body skips this
+   column entirely, which keeps it out of the cursor's path and out of a copied range. */
+.afs-head__add {
+  appearance: none; border: none; background: none; cursor: pointer;
+  color: var(--afs-muted); font: inherit; font-size: 1.1em; line-height: 1;
+  width: 100%; padding: 0;
+}
+
+.afs-head__add:hover { color: var(--afs-accent); }
+
+.afs-views-panel__search {
+  flex: 0 0 auto;
+  margin: 0.3rem;
+  font: inherit;
+  padding: 0.2rem 0.35rem;
+  border: 1px solid var(--afs-border);
+  border-radius: 3px;
+  background: var(--afs-input-bg);
+  color: var(--afs-input-fg);
+  min-width: 0;
+}
+
+/* The dialog stacks its inputs rather than putting them on one row — a name and a type are
+   two decisions, and side by side they read as one control with an odd second half. */
+.afs-modal .afs-menu__input,
+.afs-modal .afs-menu__select { width: 100%; }

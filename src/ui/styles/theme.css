@@ -1,0 +1,187 @@
+/* One set of tokens, two sources of truth for their values.
+ *
+ * Every color in this app resolves through an --afs-* token defined here, and every token
+ * is written as `var(--vscode-SOMETHING, <fallback>)`. Inside a VS Code webview the host
+ * injects the --vscode-* variables and the extension inherits whatever theme the user has
+ * chosen. Outside VS Code — browser mode, and the Playwright harness — none of those
+ * variables exist, the fallback applies, and the prefers-color-scheme block below supplies
+ * a second set tuned for dark.
+ *
+ * The dark block still resolves --vscode-* first. That is deliberate: it means VS Code wins
+ * in every combination, including a light VS Code theme on a dark OS, without this file
+ * having to know which way round the host reports its color scheme.
+ *
+ * This is the ONLY stylesheet allowed to contain a color literal or a --vscode-* reference.
+ * scripts/check-theme.js enforces that, because the failure mode otherwise is invisible:
+ * a hardcoded light-mode color looks perfectly fine until somebody opens a dark theme. */
+
+:root {
+  --afs-font: var(--vscode-font-family, ui-sans-serif, system-ui, -apple-system, sans-serif);
+  --afs-font-size: var(--vscode-font-size, 13px);
+  --afs-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+
+  /* base surfaces and text */
+  --afs-bg: var(--vscode-editor-background, #ffffff);
+  --afs-fg: var(--vscode-editor-foreground, #1f2328);
+  --afs-muted: var(--vscode-descriptionForeground, #656d76);
+  --afs-border: var(--vscode-panel-border, #d1d9e0);
+  --afs-accent: var(--vscode-focusBorder, #0969da);
+
+  /* raised surfaces — modals, toasts, menus, the filter panel */
+  --afs-surface: var(--vscode-editorWidget-background, #ffffff);
+  --afs-menu-bg: var(--vscode-menu-background, #ffffff);
+
+  /* form controls */
+  --afs-input-bg: var(--vscode-input-background, #ffffff);
+  --afs-input-fg: var(--vscode-input-foreground, var(--afs-fg));
+
+  /* interaction. The hover tints are deliberately neutral grey rather than accent-tinted:
+     they read the same on a light and a dark background, so they need no dark override. */
+  --afs-hover: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.08));
+  --afs-hover-strong: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.12));
+  --afs-selection: var(--vscode-list-activeSelectionBackground, rgba(9, 105, 218, 0.12));
+  --afs-selection-soft: var(--vscode-editor-inactiveSelectionBackground, rgba(9, 105, 218, 0.08));
+  --afs-info-bg: var(--vscode-inputValidation-infoBackground, rgba(9, 105, 218, 0.08));
+  /* group-header banding — same VS Code color, but neutral when it falls back, since it
+     bands rows rather than indicating a selection */
+  --afs-band: var(--vscode-editor-inactiveSelectionBackground, rgba(127, 127, 127, 0.09));
+
+  /* buttons */
+  --afs-button-bg: var(--vscode-button-background, #0969da);
+  --afs-button-fg: var(--vscode-button-foreground, #ffffff);
+  --afs-button-secondary-bg: var(--vscode-button-secondaryBackground, transparent);
+  --afs-button-secondary-fg: var(--vscode-button-secondaryForeground, var(--afs-fg));
+
+  /* status */
+  --afs-danger-bg: var(--vscode-inputValidation-errorBackground, #d1242f);
+  --afs-danger-fg: var(--vscode-inputValidation-errorForeground, #ffffff);
+  --afs-danger-border: var(--vscode-inputValidation-errorBorder, #d1242f);
+  --afs-danger-text: var(--vscode-errorForeground, #d1242f);
+  --afs-warning: var(--vscode-editorWarning-foreground, #bf8700);
+  --afs-added: var(--vscode-gitDecoration-addedResourceForeground, #1a7f37);
+  --afs-deleted: var(--vscode-gitDecoration-deletedResourceForeground, #cf222e);
+
+  /* incidental */
+  --afs-badge-bg: var(--vscode-badge-background, rgba(127, 127, 127, 0.18));
+  --afs-badge-fg: var(--vscode-badge-foreground, var(--afs-fg));
+  --afs-link: var(--vscode-textLink-foreground, var(--afs-accent));
+  --afs-code-bg: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.1));
+  --afs-shadow: var(--vscode-widget-shadow, rgba(0, 0, 0, 0.28));
+  --afs-shadow-strong: var(--vscode-widget-shadow, rgba(0, 0, 0, 0.4));
+  --afs-backdrop: rgba(0, 0, 0, 0.45);
+
+  /* Select-field chip colors.
+   *
+   * The one palette in this file with no `--vscode-*` source, and deliberately so. Every other
+   * color here is the editor's opinion, inherited so the tool disappears into whatever theme
+   * is running. These are the *user's* data — "Won" is green because they made it green — so a
+   * theme change must not repaint their categories. They stay legible against both backgrounds
+   * instead by being tinted backgrounds under the normal foreground color rather than
+   * saturated fills that would need their own text color.
+   *
+   * Ordered by hue, which is what makes a twelve-option list read as a spectrum. */
+  --afs-choice-blue: rgba(47, 129, 247, 0.32);
+  --afs-choice-cyan: rgba(28, 166, 190, 0.32);
+  --afs-choice-teal: rgba(21, 162, 138, 0.32);
+  --afs-choice-green: rgba(45, 164, 78, 0.32);
+  --afs-choice-lime: rgba(126, 176, 45, 0.34);
+  --afs-choice-yellow: rgba(212, 167, 44, 0.36);
+  --afs-choice-orange: rgba(219, 109, 40, 0.34);
+  --afs-choice-red: rgba(207, 34, 46, 0.32);
+  --afs-choice-pink: rgba(219, 97, 162, 0.32);
+  --afs-choice-purple: rgba(163, 113, 247, 0.34);
+  --afs-choice-indigo: rgba(105, 112, 227, 0.34);
+  --afs-choice-gray: rgba(127, 127, 127, 0.3);
+
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --afs-bg: var(--vscode-editor-background, #1f2023);
+    --afs-fg: var(--vscode-editor-foreground, #e6edf3);
+    --afs-muted: var(--vscode-descriptionForeground, #9198a1);
+    --afs-border: var(--vscode-panel-border, #3d444d);
+    --afs-accent: var(--vscode-focusBorder, #4493f8);
+
+    /* Lifted off the background rather than dropped below it. On a dark theme a raised
+       surface reads as raised by being lighter; the shadow alone cannot say it. */
+    --afs-surface: var(--vscode-editorWidget-background, #26282d);
+    --afs-menu-bg: var(--vscode-menu-background, #26282d);
+
+    /* Inputs go the other way — recessed, so a field is distinguishable from the panel it
+       sits on without needing a heavier border. */
+    --afs-input-bg: var(--vscode-input-background, #16171a);
+
+    --afs-selection: var(--vscode-list-activeSelectionBackground, rgba(68, 147, 248, 0.22));
+    --afs-selection-soft: var(--vscode-editor-inactiveSelectionBackground, rgba(68, 147, 248, 0.14));
+    --afs-info-bg: var(--vscode-inputValidation-infoBackground, rgba(68, 147, 248, 0.14));
+
+    --afs-button-bg: var(--vscode-button-background, #2f81f7);
+    --afs-danger-bg: var(--vscode-inputValidation-errorBackground, #b3252d);
+    --afs-danger-border: var(--vscode-inputValidation-errorBorder, #b3252d);
+    --afs-danger-text: var(--vscode-errorForeground, #ff7b72);
+    --afs-warning: var(--vscode-editorWarning-foreground, #d29922);
+    --afs-added: var(--vscode-gitDecoration-addedResourceForeground, #3fb950);
+    --afs-deleted: var(--vscode-gitDecoration-deletedResourceForeground, #f85149);
+
+    /* A shadow on a dark surface has less contrast to work with, so it needs to be deeper
+       to do the same job. */
+    --afs-shadow: var(--vscode-widget-shadow, rgba(0, 0, 0, 0.6));
+    --afs-shadow-strong: var(--vscode-widget-shadow, rgba(0, 0, 0, 0.7));
+    --afs-backdrop: rgba(0, 0, 0, 0.6);
+
+    /* Same twelve hues, opened up. A 0.18 tint that reads as a soft wash on white is close to
+       invisible on a dark editor background, so the alpha goes up rather than the hue changing
+       — the option keeps its identity across themes, which is the whole point of not sourcing
+       these from `--vscode-*`. */
+    --afs-choice-blue: rgba(88, 166, 255, 0.38);
+    --afs-choice-cyan: rgba(57, 197, 217, 0.38);
+    --afs-choice-teal: rgba(45, 195, 165, 0.36);
+    --afs-choice-green: rgba(63, 185, 80, 0.38);
+    --afs-choice-lime: rgba(160, 209, 79, 0.38);
+    --afs-choice-yellow: rgba(226, 192, 68, 0.38);
+    --afs-choice-orange: rgba(240, 136, 62, 0.38);
+    --afs-choice-red: rgba(248, 81, 73, 0.38);
+    --afs-choice-pink: rgba(240, 128, 190, 0.38);
+    --afs-choice-purple: rgba(188, 140, 255, 0.38);
+    --afs-choice-indigo: rgba(140, 148, 255, 0.38);
+    --afs-choice-gray: rgba(160, 160, 160, 0.36);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--afs-font);
+  font-size: var(--afs-font-size);
+  color: var(--afs-fg);
+  background: var(--afs-bg);
+}
+
+.afs-boot {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--afs-muted);
+}
+
+.afs-boot code {
+  font-family: var(--afs-mono);
+}
+
+.afs-boot[data-state="error"] {
+  color: var(--afs-danger-text);
+}

@@ -1,0 +1,29 @@
+# Source — the bundles in dist/ are what run
+src/**
+esbuild.config.js
+tsconfig.json
+
+# Dev/test server — not used by the extension
+dist/server.mjs
+dist/server.mjs.map
+
+# Sourcemaps
+dist/**/*.map
+
+# Repo furniture
+.gitignore
+.vscodeignore
+**/.DS_Store
+CHANGELOG.md
+
+# Images used by README on GitHub but not needed inside the extension
+logo-horizontal.png
+screenshot.png
+
+# Native module build artifacts (prebuilds stay — they're the runtime)
+node_modules/better-sqlite3/src/**
+node_modules/better-sqlite3/deps/**
+node_modules/better-sqlite3/build/**
+node_modules/better-sqlite3/binding.gyp
+node_modules/better-sqlite3/*.gypi
+node_modules/node-addon-api/**

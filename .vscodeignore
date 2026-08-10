@@ -14,7 +14,6 @@ dist/**/*.map
 .gitignore
 .vscodeignore
 **/.DS_Store
-CHANGELOG.md
 
 # Images used by README on GitHub but not needed inside the extension
 logo-horizontal.png

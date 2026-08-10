@@ -2,7 +2,7 @@
   "name": "airsqlite",
   "displayName": "AirSQLite",
   "description": "Airtable-style grid, views, and linked records for local SQLite databases.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "MIT",
   "publisher": "AirSQLite",
   "repository": {

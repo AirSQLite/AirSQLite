@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-10
+
+### Fixed
+- Changelog now displays on the Visual Studio Marketplace
+
 ## [0.1.1] - 2026-08-10
 
 ### Fixed
@@ -35,6 +40,7 @@ Initial public release.
 - Configuration stored in `_airsqlite_*` tables inside the database (views travel with the file)
 - Read-only mode with graceful degradation when the file is not writable
 
-[Unreleased]: https://github.com/AirSQLite/AirSQLite/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/AirSQLite/AirSQLite/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/AirSQLite/AirSQLite/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/AirSQLite/AirSQLite/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/AirSQLite/AirSQLite/releases/tag/v0.1.0

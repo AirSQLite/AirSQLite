@@ -2,7 +2,7 @@
   "name": "airsqlite",
   "displayName": "AirSQLite",
   "description": "Airtable-style grid, views, and linked records for local SQLite databases.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "license": "MIT",
   "publisher": "AirSQLite",
   "repository": {
@@ -43,7 +43,7 @@
   "scripts": {
     "vscode:prepublish": "node esbuild.config.js --production",
     "build": "node esbuild.config.js",
-    "package": "vsce package --no-dependencies=false"
+    "package": "vsce package"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3"

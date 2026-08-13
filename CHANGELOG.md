@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-08-13
+
+### Fixed
+- Databases open again. Releases up to and including 0.1.2 were packaged without the SQLite engine the extension depends on, so the extension failed to start and every `.db`, `.sqlite`, and `.sqlite3` file opened to a tab that never finished loading. Anyone on an affected version should upgrade.
+- Percent, duration, and rating can be selected as column display types. They were offered in the column menu but rejected when applied.
+
 ## [0.1.2] - 2026-08-10
 
 ### Fixed
@@ -40,7 +46,8 @@ Initial public release.
 - Configuration stored in `_airsqlite_*` tables inside the database (views travel with the file)
 - Read-only mode with graceful degradation when the file is not writable
 
-[Unreleased]: https://github.com/AirSQLite/AirSQLite/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/AirSQLite/AirSQLite/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/AirSQLite/AirSQLite/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/AirSQLite/AirSQLite/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/AirSQLite/AirSQLite/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/AirSQLite/AirSQLite/releases/tag/v0.1.0

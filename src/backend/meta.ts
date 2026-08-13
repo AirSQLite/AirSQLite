@@ -118,6 +118,9 @@ const DISPLAY_TYPES = new Set<DisplayType>([
   'phone',
   'email',
   'long_text',
+  'percent',
+  'duration',
+  'rating',
 ])
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/

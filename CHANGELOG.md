@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.1.4] - 2026-08-14
+## [0.1.5] - 2026-08-14
 
 ### Added
 - **Computed fields** — agent-authored SQL formula columns stored in column metadata, evaluated at query time. Filterable, sortable, and summarizable. Read-only in grid and detail panel with a braces badge; formula visible in the column header menu.
@@ -74,8 +74,8 @@ Initial public release.
 - Configuration stored in `_airsqlite_*` tables inside the database (views travel with the file)
 - Read-only mode with graceful degradation when the file is not writable
 
-[Unreleased]: https://github.com/AirSQLite/AirSQLite/compare/v0.1.4...HEAD
-[0.1.4]: https://github.com/AirSQLite/AirSQLite/compare/v0.1.3...v0.1.4
+[Unreleased]: https://github.com/AirSQLite/AirSQLite/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/AirSQLite/AirSQLite/compare/v0.1.3...v0.1.5
 [0.1.3]: https://github.com/AirSQLite/AirSQLite/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/AirSQLite/AirSQLite/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/AirSQLite/AirSQLite/compare/v0.1.0...v0.1.1

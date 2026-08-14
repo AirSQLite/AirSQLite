@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'preact/hooks'
 import type { ColumnDescriptor, SortSpec } from '../../shared/protocol.js'
-import { menuIcon } from './FieldTypeIcons.js'
+import { ColumnPicker, menuIcon } from './FieldTypeIcons.js'
 import { useDismissOnOutside } from '../state/dismiss.js'
 
 // Stacked sort rules, in one place.
@@ -71,24 +71,13 @@ export function SortMenu({ columns, sort, groupedBy, onChange }: SortMenuProps) 
               <li key={rule.column} class="afs-sort__row" data-sort-column={rule.column}>
                 <span class="afs-sort__ordinal">{index === 0 ? 'Sort by' : 'then by'}</span>
 
-                <select
-                  class="afs-sort__column"
-                  data-testid={`sort-column-${index}`}
+                <ColumnPicker
+                  columns={sortable.filter((column) => column.name === rule.column || !used.has(column.name))}
                   value={rule.column}
-                  onChange={(event) =>
-                    replace(index, { column: (event.currentTarget as HTMLSelectElement).value })
-                  }
-                >
-                  {/* The rule's own column stays listed even though it is "used" — otherwise the
-                      select would have no option matching its value and would render blank. */}
-                  {sortable
-                    .filter((column) => column.name === rule.column || !used.has(column.name))
-                    .map((column) => (
-                      <option key={column.name} value={column.name}>
-                        {column.name}
-                      </option>
-                    ))}
-                </select>
+                  testId={`sort-column-${index}`}
+                  class="afs-sort__column"
+                  onChange={(name) => replace(index, { column: name })}
+                />
 
                 <select
                   class="afs-sort__direction"

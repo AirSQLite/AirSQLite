@@ -7,7 +7,7 @@ import type {
   FilterOperator,
   SqlValue,
 } from '../../shared/protocol.js'
-import { menuIcon } from './FieldTypeIcons.js'
+import { ColumnPicker, menuIcon } from './FieldTypeIcons.js'
 
 // A filter builder with no SQL in it anywhere.
 //
@@ -147,10 +147,8 @@ export function FilterBuilder({
       <div class="afs-filter__head">
         <strong>Filters</strong>
         <button type="button" class="afs-button" data-testid="filter-clear" onClick={() => onChange(null)}>
+          <span class="afs-menu__item-icon" dangerouslySetInnerHTML={{ __html: menuIcon('x', { size: 14 }) }} />
           Clear all
-        </button>
-        <button type="button" class="afs-button" data-testid="filter-close" onClick={onClose}>
-          Done
         </button>
       </div>
 
@@ -251,7 +249,8 @@ function GroupEditor({ group, columns, linkColumns, depth, onChange }: GroupEdit
             onChange({ ...group, children: [...group.children, newCondition(columns, linkColumns)] })
           }
         >
-          + Condition
+          <span class="afs-menu__item-icon" dangerouslySetInnerHTML={{ __html: menuIcon('plus', { size: 14 }) }} />
+          Condition
         </button>
         <button
           type="button"
@@ -267,9 +266,8 @@ function GroupEditor({ group, columns, linkColumns, depth, onChange }: GroupEdit
             })
           }
         >
-          {/* "Group" alone reads as the *grouping* feature in the toolbar next door, which is
-              a different thing entirely. This nests conditions; that buckets rows. */}
-          + Condition group
+          <span class="afs-menu__item-icon" dangerouslySetInnerHTML={{ __html: menuIcon('plus', { size: 14 }) }} />
+          Condition group
         </button>
       </div>
     </div>
@@ -312,18 +310,13 @@ function ConditionEditor({ condition, columns, linkColumns, onChange }: Conditio
 
   return (
     <div class="afs-filter__condition" data-testid="filter-condition">
-      <select
-        class="afs-filter__column"
-        data-testid="filter-column"
+      <ColumnPicker
+        columns={columns}
         value={condition.column}
-        onChange={(event) => setColumn((event.currentTarget as HTMLSelectElement).value)}
-      >
-        {columns.map((column) => (
-          <option key={column.name} value={column.name}>
-            {column.name}
-          </option>
-        ))}
-      </select>
+        testId="filter-column"
+        class="afs-filter__column"
+        onChange={setColumn}
+      />
 
       <select
         class="afs-filter__operator"

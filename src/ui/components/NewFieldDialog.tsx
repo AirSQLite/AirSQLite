@@ -13,6 +13,7 @@ const TYPES: Array<{ value: string; label: string }> = [
   { value: 'text', label: 'Text' },
   { value: 'long_text', label: 'Long text' },
   { value: 'number', label: 'Number' },
+  { value: 'percent', label: 'Percent' },
   { value: 'currency', label: 'Currency (USD)' },
   { value: 'checkbox', label: 'Checkbox' },
   { value: 'toggle', label: 'Toggle' },
@@ -22,7 +23,6 @@ const TYPES: Array<{ value: string; label: string }> = [
   { value: 'url', label: 'URL' },
   { value: 'email', label: 'Email' },
   { value: 'phone', label: 'Phone' },
-  { value: 'percent', label: 'Percent' },
   { value: 'duration', label: 'Duration' },
   { value: 'rating', label: 'Rating' },
 ]

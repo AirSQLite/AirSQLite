@@ -6,6 +6,7 @@ import type {
   Row,
   SortSpec,
   SqlValue,
+  SummaryFunction,
 } from '../../shared/protocol.js'
 import type { Client } from '../state/client.js'
 import { fieldTypeIcon, menuIcon } from './FieldTypeIcons.js'
@@ -26,7 +27,7 @@ import { changeKey, type TableData } from '../state/store.js'
 import type { LaidOutColumn } from '../state/views.js'
 import { ActionButtons } from './ActionButtons.js'
 import { CellEditor } from './CellEditor.js'
-import { CellValue, formatValue } from './CellValue.js'
+import { CellValue, formatCurrency, formatValue, isTruthy } from './CellValue.js'
 import { ColumnHeaderMenu } from './ColumnHeaderMenu.js'
 import { LinkedRecordChip } from './LinkedRecordChip.js'
 import { LinkedRecordEditor } from './LinkedRecordEditor.js'
@@ -99,6 +100,9 @@ export interface GridProps {
    * interleaves headers, and display index stops equalling row index — see state/grouping.ts.
    */
   view: GridView
+  grouping: string[]
+  allColumns: ColumnDescriptor[]
+  summaryConfig: Record<string, import('../../shared/protocol.js').SummaryFunction>
   onToggleGroup: (values: SqlValue[]) => void
   /** Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z. The stack itself lives in state/history.ts. */
   onUndo: () => void
@@ -143,6 +147,7 @@ export interface GridProps {
   /** The table's primary field. It labels linked records and is pinned leftmost. */
   primaryField: string
   onSetPrimary: (column: string) => void
+  onRenameColumn: (column: string) => void
   onDuplicateColumn: (column: string) => void
   onDeleteColumn: (column: string) => void
   /** Add a field. `beside` places it in the *view*, since SQLite can only append to the table. */
@@ -232,6 +237,9 @@ export function Grid({
   client,
   links,
   view,
+  grouping,
+  allColumns,
+  summaryConfig,
   onToggleGroup,
   onUndo,
   onRedo,
@@ -254,6 +262,7 @@ export function Grid({
   onHarvestValues,
   primaryField,
   onSetPrimary,
+  onRenameColumn,
   onDuplicateColumn,
   onDeleteColumn,
   onAddColumn,
@@ -614,7 +623,7 @@ export function Grid({
         if (item?.kind === 'header') return onToggleGroup(item.node.values)
         const row = item ? data.getRow(item.rowIndex) : undefined
         const column = dataColumns[cursor.column]
-        if (!row || row.rowid === null || !column || column.descriptor?.virtual) return
+        if (!row || row.rowid === null || !column || column.descriptor?.virtual || column.descriptor?.computed) return
         if (editable) setEditing({ rowid: row.rowid, column: column.key })
         return
       }
@@ -765,6 +774,13 @@ export function Grid({
                       dangerouslySetInnerHTML={{ __html: fieldTypeIcon(column.descriptor.displayType, { size: 14 }) ?? '' }}
                     />
                   ) : null}
+                  {column.descriptor?.computed ? (
+                    <span
+                      class="afs-head__computed-badge"
+                      title="Computed field"
+                      dangerouslySetInnerHTML={{ __html: menuIcon('braces', { size: 12 }) }}
+                    />
+                  ) : null}
                   <span class="afs-head__label">{column.label}</span>
                   {/* Only when there is one. An icon on every header would be forty pieces of
                       chrome saying nothing, and the point of the icon is that its presence is
@@ -824,6 +840,7 @@ export function Grid({
                   onHarvestValues={() => onHarvestValues(column.key)}
                   isPrimary={column.key === primaryField}
                   onSetPrimary={() => onSetPrimary(column.key)}
+                  onRename={() => onRenameColumn(column.key)}
                   onDuplicate={() => onDuplicateColumn(column.key)}
                   onDelete={() => onDeleteColumn(column.key)}
                   onInsert={(side) => onAddColumn({ column: column.key, side })}
@@ -886,6 +903,10 @@ export function Grid({
                   node={item.node}
                   collapsed={item.collapsed}
                   columns={layout}
+                  allColumns={allColumns}
+                  grouping={grouping}
+                  summaryConfig={summaryConfig}
+                  leadingWidth={chromeWidth(editable)}
                   onToggle={onToggleGroup}
                 />
               )
@@ -1069,7 +1090,7 @@ function GridCell({
                 onExpandRow(rowid)
               }}
             >
-              ⤢
+              <span dangerouslySetInnerHTML={{ __html: menuIcon('expand', { size: 14 }) }} />
             </button>
           </>
         ) : null}
@@ -1157,7 +1178,7 @@ function GridCell({
   if (conflicted) classes.push('afs-cell--conflict')
 
   // Created and Modified come from the changelog; there is no column behind them to write to.
-  const canEdit = editable && rowid !== null && !descriptor.virtual
+  const canEdit = editable && rowid !== null && !descriptor.virtual && !descriptor.computed
   const target = links.target(column.key)
 
   return (
@@ -1201,7 +1222,7 @@ function GridCell({
           data-testid="cell-conflict"
           title={`Changed elsewhere while you were editing — now ${text || '(blank)'}. Your edit will overwrite it.`}
         >
-          ⚠
+          <span dangerouslySetInnerHTML={{ __html: menuIcon('alert_triangle', { size: 14 }) }} />
         </span>
       ) : null}
       {editing && rowid !== null && target ? (
@@ -1241,6 +1262,43 @@ function GridCell({
 }
 
 /**
+ * Format a group value according to its column's display type.
+ */
+interface GroupLabel { text: string; html?: string }
+
+function formatGroupValue(value: SqlValue | undefined, descriptor?: ColumnDescriptor): GroupLabel {
+  if (value === null || value === undefined) return { text: '' }
+  const type = descriptor?.displayType
+  if (type === 'checkbox' || type === 'toggle') {
+    const checked = isTruthy(value)
+    return {
+      text: checked ? 'Checked' : 'Unchecked',
+      html: menuIcon(checked ? 'checkbox' : 'square', { size: 14 }),
+    }
+  }
+  if (type === 'currency') return { text: formatCurrency(value, (descriptor?.options?.showCents as boolean) ?? true) ?? formatValue(value) }
+  if (type === 'percent') {
+    const n = typeof value === 'number' ? value : Number(value)
+    if (Number.isFinite(n)) {
+      const decimals = (descriptor?.options?.decimals as number) ?? 2
+      return { text: `${(n * 100).toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}%` }
+    }
+  }
+  if (type === 'date') {
+    const text = formatValue(value)
+    const ts = typeof value === 'number' ? value : Date.parse(text)
+    if (Number.isFinite(ts)) {
+      const d = new Date(ts)
+      const opts: Intl.DateTimeFormatOptions = { year: 'numeric', month: 'short', day: 'numeric' }
+      const tz = (descriptor?.options?.timezone as string) || undefined
+      if (tz) opts.timeZone = tz
+      return { text: d.toLocaleDateString(undefined, opts) }
+    }
+  }
+  return { text: formatValue(value) }
+}
+
+/**
  * A group header. Exactly one row tall, because the scroll arithmetic upstream divides by a
  * single row height — a taller header would need a measured-offset table, which is the thing
  * virtual scroll exists to avoid.
@@ -1248,20 +1306,65 @@ function GridCell({
  * It sticks to the left edge rather than scrolling with the columns: the label is what tells
  * you which group you are inside, and losing it when you scroll right defeats the point.
  */
+const SUMMARY_LABELS: Record<string, string> = {
+  sum: 'Sum', average: 'Avg', count: 'Count', min: 'Min', max: 'Max',
+  count_empty: 'Empty', count_not_empty: 'Filled', percent_empty: '% empty',
+}
+
+const MONETARY_FNS = new Set<SummaryFunction>(['sum', 'average', 'min', 'max'])
+
+function formatSummaryValue(value: SqlValue | undefined, type?: DisplayType, fn?: SummaryFunction, options?: Record<string, unknown> | null): string {
+  if (value === null || value === undefined) return '—'
+  if (type === 'currency' && fn && MONETARY_FNS.has(fn)) {
+    const showCents = (options?.showCents as boolean) ?? true
+    const money = formatCurrency(value, showCents)
+    if (money !== null) return money
+  }
+  if (type === 'percent' && fn && MONETARY_FNS.has(fn)) {
+    const n = typeof value === 'number' ? value : Number(value)
+    if (Number.isFinite(n)) return `${(n * 100).toLocaleString(undefined, { maximumFractionDigits: 2 })}%`
+  }
+  if (typeof value === 'number' && !Number.isInteger(value)) {
+    return value.toLocaleString(undefined, { maximumFractionDigits: 2 })
+  }
+  if (typeof value === 'number') return value.toLocaleString()
+  return formatValue(value)
+}
+
 function GroupHeader({
   node,
   collapsed,
   columns,
+  allColumns,
+  grouping,
+  summaryConfig,
+  leadingWidth,
   onToggle,
 }: {
   node: GroupNode
   collapsed: boolean
   columns: LaidOutColumn[]
+  allColumns: ColumnDescriptor[]
+  grouping: string[]
+  summaryConfig: Record<string, SummaryFunction>
+  leadingWidth: number
   onToggle: (values: SqlValue[]) => void
 }) {
-  const column = columns[node.depth]?.descriptor.name
+  const groupColumn = grouping[node.depth]
+  const descriptor = allColumns.find((c) => c.name === groupColumn)
   const value = node.values[node.values.length - 1]
-  const label = formatValue(value)
+  const label = formatGroupValue(value, descriptor)
+
+  let colOffset = leadingWidth
+  const cellPositions: Array<{ name: string; left: number; width: number; displayType?: DisplayType; options?: Record<string, unknown> | null }> = []
+  for (const { descriptor: colDesc, width } of columns) {
+    const fn = summaryConfig[colDesc.name] as SummaryFunction | undefined
+    const val = node.summary?.[colDesc.name]
+    if (fn && val !== null && val !== undefined) {
+      cellPositions.push({ name: colDesc.name, left: colOffset, width, displayType: colDesc.displayType, options: colDesc.options })
+    }
+    colOffset += width
+  }
 
   return (
     <div
@@ -1269,23 +1372,43 @@ function GroupHeader({
       role="row"
       data-testid="group-header"
       data-group-depth={node.depth}
-      data-group-value={label}
+      data-group-value={label.text}
     >
       <button
         type="button"
         class="afs-group__toggle"
         style={{ paddingLeft: `${8 + node.depth * 16}px` }}
         aria-expanded={!collapsed}
-        data-testid={`group-toggle-${label}`}
+        data-testid={`group-toggle-${label.text}`}
         onClick={() => onToggle(node.values)}
       >
         <span class="afs-group__chevron" dangerouslySetInnerHTML={{ __html: menuIcon(collapsed ? 'chevron_right' : 'chevron_down', { size: 14 }) }} />
-        {column ? <span class="afs-group__column">{column}</span> : null}
-        <span class="afs-group__value">{label === '' ? '(empty)' : label}</span>
+        {groupColumn ? <span class="afs-group__column">{groupColumn}</span> : null}
+        {label.html ? (
+          <span class="afs-group__value" dangerouslySetInnerHTML={{ __html: label.html }} />
+        ) : (
+          <span class="afs-group__value">{label.text === '' ? '(empty)' : label.text}</span>
+        )}
         <span class="afs-group__count" data-testid="group-count">
           {node.count}
         </span>
       </button>
+      {cellPositions.map((cell) => {
+        const fn = summaryConfig[cell.name]!
+        const val = node.summary![cell.name]
+        return (
+          <span
+            key={cell.name}
+            class="afs-group__cell"
+            style={{ position: 'absolute', left: `${cell.left}px`, width: `${cell.width}px` }}
+            data-testid={`group-summary-${cell.name}`}
+          >
+            <span class="afs-group__summary-label">{SUMMARY_LABELS[fn] ?? fn}</span>
+            {' '}
+            {formatSummaryValue(val, cell.displayType, fn, cell.options)}
+          </span>
+        )
+      })}
     </div>
   )
 }

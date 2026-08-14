@@ -128,9 +128,7 @@ export function ChoiceEditor({ options, disabled, onChange }: ChoiceEditorProps)
               data-choice={choice.value}
               {...reorder.itemProps(choice.value)}
             >
-              <span class="afs-choices__grip" aria-hidden="true">
-                ⠿
-              </span>
+              <span class="afs-choices__grip" aria-hidden="true" dangerouslySetInnerHTML={{ __html: menuIcon('grip_vertical', { size: 12 }) }} />
 
               <select
                 class="afs-choices__color"

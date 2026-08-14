@@ -32,6 +32,11 @@ import { compileFilter, compileSearch, quoteIdent, type LinkTarget } from './fil
 // once — WAL so a reader never blocks a writer, and busy_timeout so a brief collision waits
 // instead of throwing.
 
+export interface ComputedColumn {
+  name: string
+  formula: string
+}
+
 const DEFAULT_LIMIT = 200
 const MAX_LIMIT = 5_000
 /** How many children a reverse-lookup section lists before it just reports the count. */
@@ -326,16 +331,18 @@ export class Db {
     })
   }
 
-  query(request: QueryRequest): QueryResult {
+  query(request: QueryRequest, computedColumns?: ComputedColumn[]): QueryResult {
     const table = this.#table(request.table)
     const columns = this.#columnNames(request.table)
     const quoted = quoteIdent(request.table)
+    const compExprs = computedExprMap(computedColumns)
 
-    const { sql: where, params } = this.#conditions(request.table, request)
+    const { sql: where, params } = this.#conditions(request.table, request, compExprs)
 
     // WITHOUT ROWID tables have no rowid to select — the UI shows them read-only.
-    const selection = table.withoutRowid ? '*' : 'rowid AS rowid, *'
-    const order = this.#orderBy(request.sort, columns, request.groupBy)
+    const base = table.withoutRowid ? '*' : 'rowid AS rowid, *'
+    const selection = appendComputedSelect(base, computedColumns)
+    const order = this.#orderBy(request.sort, columns, request.groupBy, compExprs, request.groupSort)
     const limit = Math.min(request.limit ?? DEFAULT_LIMIT, MAX_LIMIT)
     const offset = Math.max(request.offset ?? 0, 0)
 
@@ -373,7 +380,7 @@ export class Db {
    * The key-column form exists because a linked-record chip knows the foreign key value it
    * holds, not where that row sits in the target table.
    */
-  record(table: string, locator: RecordLocator): Row | null {
+  record(table: string, locator: RecordLocator, computedColumns?: ComputedColumn[]): Row | null {
     const info = this.#table(table)
 
     let where: string
@@ -392,7 +399,8 @@ export class Db {
       param = locator.keyValue
     }
 
-    const selection = info.withoutRowid ? '*' : 'rowid AS rowid, *'
+    const base = info.withoutRowid ? '*' : 'rowid AS rowid, *'
+    const selection = appendComputedSelect(base, computedColumns)
     try {
       const row = this.#conn
         .prepare(`SELECT ${selection} FROM ${quoteIdent(table)} WHERE ${where} LIMIT 1`)
@@ -526,10 +534,14 @@ export class Db {
   #conditions(
     table: string,
     request: { filter?: FilterNode | null; search?: string | null; searchColumns?: string[] },
+    computedExprs?: Map<string, string>,
   ): { sql: string; params: SqlValue[] } {
+    const columns = this.#columnNames(table)
+    if (computedExprs) for (const name of computedExprs.keys()) columns.add(name)
     const filter = compileFilter(request.filter, {
-      columns: this.#columnNames(table),
+      columns,
       links: this.linkResolver?.(table),
+      computedExprs,
     })
 
     // Search spans the columns the user can actually see. Searching a hidden column produces
@@ -556,23 +568,28 @@ export class Db {
    * collapse a group without refetching anything: collapsing removes display slots, and the
    * offsets underneath them never move.
    */
-  #orderBy(sort: SortSpec[] | undefined, columns: Set<string>, groupBy?: string[]): string {
+  #orderBy(sort: SortSpec[] | undefined, columns: Set<string>, groupBy?: string[], computedExprs?: Map<string, string>, groupSort?: Record<string, 'asc' | 'desc'>): string {
     const terms: string[] = []
+    const ref = (name: string) => {
+      const expr = computedExprs?.get(name)
+      return expr ? `(${expr})` : quoteIdent(name)
+    }
 
     for (const column of groupBy ?? []) {
-      if (!columns.has(column)) {
+      if (!columns.has(column) && !computedExprs?.has(column)) {
         throw new ProtocolError(`There is no column named "${column}" to group by.`)
       }
-      terms.push(`${quoteIdent(column)} ASC`)
+      const dir = groupSort?.[column] === 'desc' ? 'DESC' : 'ASC'
+      terms.push(`${ref(column)} ${dir}`)
     }
 
     for (const spec of sort ?? []) {
-      if (!columns.has(spec.column)) {
+      if (!columns.has(spec.column) && !computedExprs?.has(spec.column)) {
         throw new ProtocolError(`There is no column named "${spec.column}" to sort by.`)
       }
       // A column already ordered by the grouping would be a no-op second term.
       if (groupBy?.includes(spec.column)) continue
-      terms.push(`${quoteIdent(spec.column)} ${spec.direction === 'desc' ? 'DESC' : 'ASC'}`)
+      terms.push(`${ref(spec.column)} ${spec.direction === 'desc' ? 'DESC' : 'ASC'}`)
     }
 
     return terms.length === 0 ? '' : ` ORDER BY ${terms.join(', ')}`
@@ -589,35 +606,57 @@ export class Db {
   groups(
     table: string,
     columns: string[],
-    request: { filter?: FilterNode | null; search?: string | null; searchColumns?: string[] } = {},
+    request: { summary?: Record<string, SummaryFunction>; filter?: FilterNode | null; search?: string | null; searchColumns?: string[]; groupSort?: Record<string, 'asc' | 'desc'> } = {},
+    computedColumns?: ComputedColumn[],
   ): GroupInfo[] {
     this.#table(table)
     if (columns.length === 0) return []
 
     const names = this.#columnNames(table)
+    const compExprs = computedExprMap(computedColumns)
     for (const column of columns) {
-      if (!names.has(column)) {
+      if (!names.has(column) && !compExprs.has(column)) {
         throw new ProtocolError(`There is no column named "${column}" to group by.`)
       }
     }
 
-    const { sql: where, params } = this.#conditions(table, request)
-    const quoted = columns.map(quoteIdent)
+    const { sql: where, params } = this.#conditions(table, request, compExprs)
+    const quoted = columns.map((c) => {
+      const expr = compExprs.get(c)
+      return expr ? `(${expr})` : quoteIdent(c)
+    })
+
+    const summaryEntries = Object.entries(request.summary ?? {})
+    const summarySelections = summaryEntries.map(([col, fn]) => {
+      const expr = compExprs.get(col)
+      const ref = expr ? `(${expr})` : quoteIdent(col)
+      return `${aggregateSql(fn, ref)} AS ${quoteIdent('__s_' + col)}`
+    })
+    const allSelections = [...quoted, 'COUNT(*) AS "__n"', ...summarySelections]
 
     try {
       const rows = this.#conn
         .prepare(
-          `SELECT ${quoted.join(', ')}, COUNT(*) AS "__n" FROM ${quoteIdent(table)}
+          `SELECT ${allSelections.join(', ')} FROM ${quoteIdent(table)}
             WHERE ${where}
             GROUP BY ${quoted.join(', ')}
-            ORDER BY ${quoted.map((c) => `${c} ASC`).join(', ')}`,
+            ORDER BY ${quoted.map((c, i) => `${c} ${request.groupSort?.[columns[i]!] === 'desc' ? 'DESC' : 'ASC'}`).join(', ')}`,
         )
         .all(...params) as Array<Record<string, SqlValue> & { __n: number }>
 
-      return rows.map((row) => ({
-        values: columns.map((column) => row[column] ?? null),
-        count: row.__n,
-      }))
+      return rows.map((row) => {
+        const info: GroupInfo = {
+          values: columns.map((column) => row[column] ?? null),
+          count: row.__n,
+        }
+        if (summaryEntries.length > 0) {
+          info.summary = {}
+          for (const [col] of summaryEntries) {
+            info.summary[col] = row['__s_' + col] ?? null
+          }
+        }
+        return info
+      })
     } catch (err) {
       throw mapSqliteError(err, { table })
     }
@@ -631,21 +670,25 @@ export class Db {
     table: string,
     spec: Record<string, SummaryFunction>,
     request: { filter?: FilterNode | null; search?: string | null; searchColumns?: string[] } = {},
+    computedColumns?: ComputedColumn[],
   ): SummaryResult {
     this.#table(table)
     const entries = Object.entries(spec)
     if (entries.length === 0) return {}
 
     const names = this.#columnNames(table)
+    const compExprs = computedExprMap(computedColumns)
     const selections: string[] = []
     for (const [column, fn] of entries) {
-      if (!names.has(column)) {
+      const expr = compExprs.get(column)
+      if (!expr && !names.has(column)) {
         throw new ProtocolError(`There is no column named "${column}" to summarise.`)
       }
-      selections.push(`${aggregateSql(fn, quoteIdent(column))} AS ${quoteIdent(column)}`)
+      const ref = expr ? `(${expr})` : quoteIdent(column)
+      selections.push(`${aggregateSql(fn, ref)} AS ${quoteIdent(column)}`)
     }
 
-    const { sql: where, params } = this.#conditions(table, request)
+    const { sql: where, params } = this.#conditions(table, request, compExprs)
     try {
       const row = this.#conn
         .prepare(`SELECT ${selections.join(', ')} FROM ${quoteIdent(table)} WHERE ${where}`)
@@ -904,6 +947,18 @@ function aggregateSql(fn: SummaryFunction, column: string): string {
  * better-sqlite3 refuses booleans outright. Converting here rather than at each call site
  * keeps checkbox and toggle columns working without every caller remembering.
  */
+function computedExprMap(columns?: ComputedColumn[]): Map<string, string> {
+  const map = new Map<string, string>()
+  if (columns) for (const c of columns) map.set(c.name, c.formula)
+  return map
+}
+
+function appendComputedSelect(base: string, columns?: ComputedColumn[]): string {
+  if (!columns || columns.length === 0) return base
+  const extras = columns.map((c) => `(${c.formula}) AS ${quoteIdent(c.name)}`)
+  return `${base}, ${extras.join(', ')}`
+}
+
 function normalize(value: SqlValue | undefined): SqlValue {
   if (value === undefined) return null
   if (typeof value === 'boolean') return value ? 1 : 0

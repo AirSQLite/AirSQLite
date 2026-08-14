@@ -456,7 +456,7 @@ function PanelField({
   const target = links.target(column.name)
   const type = column.displayType ?? 'text'
   // Created and Modified are derived from the changelog — there is no column behind them.
-  const canEdit = editable && !column.primaryKeyIndex && !column.virtual
+  const canEdit = editable && !column.primaryKeyIndex && !column.virtual && !column.computed
   /** Types whose value is prose worth marking. The rest render as controls, not text. */
   const searchable = !['checkbox', 'toggle', 'single_select', 'multi_select'].includes(type)
 
@@ -663,7 +663,7 @@ function HistoryTimeline({
                 <span class="afs-history__name">{field}</span>
                 {/* Only the fields that changed are stored, so this is the whole diff. */}
                 <span class="afs-history__before">{formatValue(entry.before[field]) || '—'}</span>
-                <span class="afs-history__arrow">→</span>
+                <span class="afs-history__arrow" dangerouslySetInnerHTML={{ __html: menuIcon('arrow_right', { size: 12 }) }} />
                 <span class="afs-history__after">{formatValue(entry.after[field]) || '—'}</span>
               </div>
             ))}

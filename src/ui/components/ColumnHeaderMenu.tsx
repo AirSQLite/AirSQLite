@@ -14,6 +14,7 @@ const TYPES: Array<{ value: DisplayType; label: string }> = [
   { value: 'text', label: 'Text' },
   { value: 'long_text', label: 'Long text' },
   { value: 'number', label: 'Number' },
+  { value: 'percent', label: 'Percent' },
   { value: 'currency', label: 'Currency (USD)' },
   { value: 'checkbox', label: 'Checkbox' },
   { value: 'toggle', label: 'Toggle' },
@@ -23,7 +24,6 @@ const TYPES: Array<{ value: DisplayType; label: string }> = [
   { value: 'url', label: 'URL' },
   { value: 'email', label: 'Email' },
   { value: 'phone', label: 'Phone' },
-  { value: 'percent', label: 'Percent' },
   { value: 'duration', label: 'Duration' },
   { value: 'rating', label: 'Rating' },
 ]
@@ -47,6 +47,7 @@ export interface ColumnHeaderMenuProps {
   onSetPrimary: () => void
   onDuplicate: () => void
   onDelete: () => void
+  onRename: (newName: string) => void
   onInsert: (side: 'left' | 'right') => void
   onClose: () => void
   allDateColumns: string[]
@@ -68,6 +69,7 @@ export function ColumnHeaderMenu({
   onHarvestValues,
   isPrimary,
   onSetPrimary,
+  onRename,
   onDuplicate,
   onDelete,
   onInsert,
@@ -160,9 +162,19 @@ export function ColumnHeaderMenu({
         </div>
       ) : null}
 
-      {/* --- Group 1: Field type, description, primary --- */}
+      {/* --- Group 1: field type, description, rename, primary --- */}
       {column.virtual ? null : (
       <div class="afs-menu__section">
+        {column.computed && column.formula ? (
+          <>
+            <label class="afs-menu__label">Formula</label>
+            <pre class="afs-menu__formula" data-testid="menu-formula">{column.formula}</pre>
+            {column.formulaError ? (
+              <p class="afs-menu__error" data-testid="menu-formula-error">{column.formulaError}</p>
+            ) : null}
+          </>
+        ) : null}
+
         <label class="afs-menu__label">Field type</label>
         <TypePicker
           types={TYPES}
@@ -190,6 +202,43 @@ export function ColumnHeaderMenu({
             allDateColumns={allDateColumns}
             onSetAllTimezones={onSetAllTimezones}
           />
+        ) : null}
+
+        {(current === 'number' || current === 'percent') && canConfigure ? (
+          <label class="afs-menu__label" for={`decimals-${column.name}`}>
+            Decimal places
+            <select
+              id={`decimals-${column.name}`}
+              class="afs-menu__select"
+              data-testid="menu-decimals"
+              value={String((column.options?.decimals as number) ?? '')}
+              onChange={(event) => {
+                const v = (event.currentTarget as HTMLSelectElement).value
+                const decimals = v === '' ? undefined : Number(v)
+                const opts = { ...column.options }
+                if (decimals === undefined) delete opts['decimals']
+                else opts['decimals'] = decimals
+                onSetDisplayType(current, Object.keys(opts).length > 0 ? opts : null)
+              }}
+            >
+              <option value="">Auto</option>
+              {Array.from({ length: 6 }, (_, i) => (
+                <option key={i} value={String(i)}>{i}</option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+
+        {current === 'currency' && canConfigure ? (
+          <label class="afs-menu__toggle-row">
+            <input
+              type="checkbox"
+              data-testid="menu-currency-cents"
+              checked={(column.options?.showCents as boolean) ?? true}
+              onChange={() => onSetDisplayType('currency', { ...column.options, showCents: !((column.options?.showCents as boolean) ?? true) })}
+            />
+            Show cents
+          </label>
         ) : null}
 
         {current === 'rating' && canConfigure ? (
@@ -237,6 +286,21 @@ export function ColumnHeaderMenu({
               }}
             />
           </>
+        ) : null}
+
+        {canConfigure ? (
+          <button
+            type="button"
+            class="afs-menu__item"
+            data-testid="menu-rename"
+            onClick={() => {
+              onRename(column.name)
+              onClose()
+            }}
+          >
+            <span class="afs-menu__item-icon" dangerouslySetInnerHTML={{ __html: menuIcon('pencil', { size: 14 }) }} />
+            Edit column name
+          </button>
         ) : null}
 
         {canConfigure ? (

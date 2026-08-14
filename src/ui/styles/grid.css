@@ -277,6 +277,9 @@
   background: var(--afs-button-secondary-bg);
   color: var(--afs-button-secondary-fg);
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
 }
 
 .afs-button:hover { border-color: var(--afs-accent); }
@@ -560,6 +563,7 @@
 .afs-head__menu svg,
 .afs-head__sort svg,
 .afs-head__info svg,
+.afs-head__computed-badge svg,
 .afs-views__hamburger svg,
 .afs-views__caret svg,
 .afs-views__hint svg,
@@ -569,6 +573,7 @@
 .afs-menu__item-icon svg { display: block; }
 
 .afs-head__info { color: var(--afs-muted); font-weight: 400; cursor: help; flex: 0 0 auto; display: inline-flex; align-items: center; }
+.afs-head__computed-badge { color: var(--afs-muted); flex: 0 0 auto; display: inline-flex; align-items: center; }
 
 /* The label yields, never the caret.
  *
@@ -633,13 +638,15 @@
   flex: 0 0 auto; display: inline-flex; align-items: center;
   color: var(--afs-muted);
 }
-.afs-menu__item-icon svg { display: block; }
+.afs-menu__item-icon svg { display: block; vertical-align: middle; }
 
 .afs-menu__item:hover { background: var(--afs-hover-strong); }
 .afs-menu__item[aria-pressed='true'] { color: var(--afs-accent); }
 
 .afs-menu__label { display: flex; flex-direction: column; gap: 0.2rem; color: var(--afs-muted); font-size: 0.9em; }
 .afs-menu__hint { color: var(--afs-muted); font-size: 0.9em; font-style: italic; margin: 0; }
+.afs-menu__formula { margin: 0; padding: 0.3rem 0.5rem; font-family: monospace; font-size: 0.85em; background: var(--afs-hover); border-radius: 3px; white-space: pre-wrap; word-break: break-all; }
+.afs-menu__error { color: var(--afs-danger-text); font-size: 0.85em; margin: 0; }
 
 .afs-menu__toggle-row {
   display: flex; align-items: center; gap: 0.4rem;
@@ -789,7 +796,33 @@
   flex: 0 0 auto; display: inline-flex; align-items: center;
   color: var(--afs-muted);
 }
+.afs-type-list__icon svg { display: block; vertical-align: middle; }
 .afs-type-list__item--active .afs-type-list__icon { color: var(--afs-accent); }
+
+.afs-col-picker { position: relative; }
+.afs-col-picker__toggle {
+  appearance: none; border: 1px solid var(--afs-border); border-radius: 4px;
+  background: var(--afs-bg); cursor: pointer;
+  font: inherit; color: inherit; font-size: 0.9em;
+  display: flex; align-items: center; gap: 0.3rem;
+  padding: 0.2rem 0.4rem; white-space: nowrap;
+}
+.afs-col-picker__toggle:hover { border-color: var(--afs-accent); }
+.afs-col-picker__list {
+  position: fixed; z-index: 100;
+  background: var(--afs-surface); border: 1px solid var(--afs-border); border-radius: 4px;
+  box-shadow: 0 4px 12px var(--afs-shadow);
+  display: flex; flex-direction: column; gap: 1px;
+  max-height: 16rem; overflow-y: auto; min-width: 10rem; padding: 0.2rem;
+}
+.afs-col-picker__item {
+  appearance: none; border: none; background: none; cursor: pointer;
+  font: inherit; color: inherit; font-size: 0.9em; text-align: left;
+  display: flex; align-items: center; gap: 0.3rem;
+  padding: 0.25rem 0.35rem; border-radius: 3px; white-space: nowrap;
+}
+.afs-col-picker__item:hover { background: var(--afs-hover-strong); }
+.afs-col-picker__item--active { color: var(--afs-accent); font-weight: 600; }
 
 .afs-views__input,
 .afs-search__input {
@@ -818,10 +851,38 @@
   margin-bottom: 0.25rem;
 }
 
+.afs-menu__toolbar {
+  display: flex; gap: 0.3rem; padding: 0.3rem 0.25rem;
+  border-bottom: 1px solid var(--afs-border);
+}
+.afs-menu__toolbar .afs-button { font-size: 0.85em; padding: 0.15rem 0.4rem; }
+
 .afs-menu__check {
   display: flex; align-items: center; gap: 0.4rem;
   padding: 0.15rem 0.25rem; cursor: pointer;
 }
+.afs-menu__check .afs-menu__item-icon { flex: 0 0 auto; opacity: 0.6; }
+
+.afs-menu__drag-item {
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.2rem 0.25rem; cursor: grab;
+  border-radius: 3px;
+}
+.afs-menu__drag-item--over { background: var(--afs-hover); }
+.afs-menu__drag-handle { opacity: 0.4; user-select: none; flex: 0 0 auto; display: inline-flex; align-items: center; }
+.afs-menu__drag-handle svg { display: block; vertical-align: middle; }
+.afs-menu__drag-item .afs-menu__item-icon { flex: 0 0 auto; opacity: 0.6; }
+.afs-menu__drag-remove {
+  margin-left: auto; background: none; border: none; cursor: pointer;
+  color: var(--afs-muted); font-size: 1em; padding: 0 0.2rem; line-height: 1;
+}
+.afs-menu__drag-remove:hover { color: var(--afs-fg); }
+.afs-menu__drag-sort {
+  background: none; border: none; cursor: pointer;
+  color: var(--afs-muted); font-size: 1em; padding: 0 0.2rem; line-height: 1;
+}
+.afs-menu__drag-sort:hover { color: var(--afs-fg); }
+.afs-menu__drag-sort svg { display: block; }
 
 /* --- filter builder ------------------------------------------------------- */
 
@@ -926,6 +987,7 @@
 /* Exactly one row tall — the scroll arithmetic divides by a single row height, so a taller
  * header would need a measured-offset table, which is what virtual scroll exists to avoid. */
 .afs-group {
+  position: relative;
   background: var(--afs-band);
   border-bottom: 1px solid var(--afs-border);
   align-items: stretch;
@@ -972,6 +1034,15 @@
   padding: 0 0.35rem;
   border-radius: 8px;
   background: color-mix(in srgb, var(--afs-fg) 10%, transparent);
+}
+
+.afs-group__cell {
+  flex: 0 0 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--afs-muted); font-size: 0.85em; padding: 0 0.5rem;
+  display: inline-flex; align-items: center;
+}
+.afs-group__summary-label {
+  opacity: 0.7; margin-right: 0.25rem;
 }
 
 /* --- summary bar ---------------------------------------------------------- */
@@ -1329,10 +1400,12 @@
 
 .afs-views-panel__new {
   flex: 0 0 auto;
+  display: flex; align-items: center; gap: 0.4rem;
   appearance: none; border: none; background: none; cursor: pointer;
   font: inherit; color: var(--afs-muted); text-align: left;
   padding: 0.45rem 0.7rem; border-top: 1px solid var(--afs-border);
 }
+.afs-views-panel__new svg { display: block; }
 
 .afs-views-panel__new:hover { color: var(--afs-fg); background: var(--afs-hover); }
 

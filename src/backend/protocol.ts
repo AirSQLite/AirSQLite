@@ -10,7 +10,7 @@ import type {
 } from '../shared/protocol.js'
 import { Actions, type ActionHost } from './actions.js'
 import { Changelog } from './changelog.js'
-import { Db } from './db.js'
+import { Db, type ComputedColumn } from './db.js'
 import { ProtocolError, mapSqliteError } from './errors.js'
 import type { LinkTarget } from './filter.js'
 import { Meta } from './meta.js'
@@ -147,14 +147,14 @@ export function createSession(ctx: HandlerContext): Session {
 
       // --- grouping and summaries -------------------------------------------
       case 'groups':
-        return db.groups(request.table, request.columns, request)
+        return db.groups(request.table, request.columns, request, validComputed(meta, request.table))
 
       case 'summary':
-        return db.summary(request.table, request.columns, request)
+        return db.summary(request.table, request.columns, request, validComputed(meta, request.table))
 
       // --- linked records --------------------------------------------------
       case 'record':
-        return db.record(request.table, request.locator)
+        return db.record(request.table, request.locator, validComputed(meta, request.table))
 
       case 'related':
         // Db leaves primaryField empty because it has no business knowing about display
@@ -168,7 +168,7 @@ export function createSession(ctx: HandlerContext): Session {
 
       // --- reads ----------------------------------------------------------
       case 'query':
-        return db.query(request)
+        return db.query(request, validComputed(meta, request.table))
       case 'search':
         return db.query({
           type: 'query',
@@ -217,6 +217,9 @@ export function createSession(ctx: HandlerContext): Session {
       case 'drop-column':
         schema.dropColumn(request.table, request.column)
         return { ok: true }
+
+      case 'rename-column':
+        return { name: schema.renameColumn(request.table, request.column, request.name) }
 
       case 'duplicate-column':
         return {
@@ -343,6 +346,13 @@ export function createSession(ctx: HandlerContext): Session {
   }
 }
 
+
+function validComputed(meta: Meta, table: string): ComputedColumn[] {
+  return meta
+    .describeColumns(table)
+    .filter((c) => c.computed && c.formula && !c.formulaError)
+    .map((c) => ({ name: c.name, formula: c.formula! }))
+}
 
 /**
  * Wrap a handler call in the response envelope. Every thrown error becomes a readable

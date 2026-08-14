@@ -125,6 +125,12 @@ export type ColumnDescriptor = ColumnInfo &
      * behind them for SQL to name.
      */
     virtual?: boolean
+    /** True for agent-authored formula columns that exist only at query time. */
+    computed?: boolean
+    /** The SQL expression for a computed column. */
+    formula?: string
+    /** Set when the formula fails validation (dry-run SELECT). */
+    formulaError?: string
   }
 
 export interface ForeignKeyInfo {
@@ -206,6 +212,8 @@ export interface GroupInfo {
   /** One value per grouping column, outermost first. */
   values: SqlValue[]
   count: number
+  /** Per-column aggregates for this leaf group, when summary functions were requested. */
+  summary?: SummaryResult
 }
 
 /** Aggregate values for the summary bar, keyed by column name. */
@@ -294,6 +302,8 @@ export interface QueryRequest {
    * grouped grid's index arithmetic depends on.
    */
   groupBy?: string[]
+  /** Sort direction per grouping column. Absent keys default to 'asc'. */
+  groupSort?: Record<string, 'asc' | 'desc'>
 }
 
 export interface QueryResult {
@@ -331,6 +341,8 @@ export interface ViewConfig {
   columnWidths?: Record<string, number>
   frozenCount?: number
   grouping?: string[]
+  /** Sort direction per grouping column. Absent keys default to 'asc'. */
+  groupSort?: Record<string, 'asc' | 'desc'>
   /** null means "explicitly cleared", which has to outrank the value stored per column. */
   summary?: Record<string, SummaryFunction | null>
   [key: string]: unknown
@@ -384,9 +396,11 @@ export type ProtocolRequest =
       type: 'groups'
       table: string
       columns: string[]
+      summary?: Record<string, SummaryFunction>
       filter?: FilterNode | null
       search?: string | null
       searchColumns?: string[]
+      groupSort?: Record<string, 'asc' | 'desc'>
     }
   | {
       type: 'summary'
@@ -425,6 +439,7 @@ export type ProtocolRequest =
   | { type: 'drop-table'; table: string }
   | { type: 'add-column'; table: string; name: string; columnType: string }
   | { type: 'drop-column'; table: string; column: string }
+  | { type: 'rename-column'; table: string; column: string; name: string }
   | {
       type: 'duplicate-column'
       table: string

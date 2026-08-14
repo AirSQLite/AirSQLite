@@ -267,6 +267,55 @@ export class Schema {
     }
   }
 
+  renameColumn(table: string, column: string, name: string): string {
+    this.#assertUserTable(table)
+    this.#assertColumn(table, column)
+    const target = assertIdentifier(name, 'column')
+    if (target === column) return column
+    if (this.#db.columns(table).some((c) => c.name === target)) {
+      throw new ProtocolError(`"${table}" already has a column called "${target}".`)
+    }
+
+    try {
+      this.#db.connection.transaction(() => {
+        this.#db.connection.exec(
+          `ALTER TABLE ${quoteIdent(table)} RENAME COLUMN ${quoteIdent(column)} TO ${quoteIdent(target)}`,
+        )
+        this.#db.connection
+          .prepare(
+            `UPDATE _airsqlite_columns SET column_name = ? WHERE table_name = ? AND column_name = ?`,
+          )
+          .run(target, table, column)
+        this.#db.connection
+          .prepare(
+            `UPDATE _airsqlite_tables SET primary_field = ? WHERE table_name = ? AND primary_field = ?`,
+          )
+          .run(target, table, column)
+
+        const views = this.#db.connection
+          .prepare('SELECT id, config FROM _airsqlite_views WHERE table_name = ?')
+          .all(table) as Array<{ id: number; config: string }>
+        const update = this.#db.connection.prepare(
+          'UPDATE _airsqlite_views SET config = ? WHERE id = ?',
+        )
+        for (const view of views) {
+          let config: Record<string, unknown>
+          try {
+            config = JSON.parse(view.config) as Record<string, unknown>
+          } catch {
+            continue
+          }
+          const next = renameInConfig(config, column, target)
+          if (next) update.run(JSON.stringify(next), view.id)
+        }
+      })()
+      this.#db.invalidateSchema()
+      return target
+    } catch (err) {
+      throw mapSqliteError(err, { table })
+    }
+  }
+
   #assertColumn(table: string, column: string): void {
     if (!this.#db.columns(table).some((c) => c.name === column)) {
       throw new ProtocolError(`There is no column named "${column}" in "${table}".`)
@@ -331,7 +380,7 @@ export function stripColumn(
   let touched = false
   const next: Record<string, unknown> = { ...config }
 
-  for (const key of ['columnVisibility', 'columnWidths', 'summary']) {
+  for (const key of ['columnVisibility', 'columnWidths', 'summary', 'groupSort']) {
     const map = next[key]
     if (map && typeof map === 'object' && column in (map as Record<string, unknown>)) {
       const copy = { ...(map as Record<string, unknown>) }
@@ -385,6 +434,80 @@ function pruneFilter(node: Record<string, unknown>, column: string): unknown {
 
   if (children.length === 0) return null
   if (children.length === (node['children'] as unknown[]).length) return node
+  return { ...node, children }
+}
+
+/** Rename a column in one view config. Returns null when nothing referenced it. */
+export function renameInConfig(
+  config: Record<string, unknown>,
+  oldName: string,
+  newName: string,
+): Record<string, unknown> | null {
+  let touched = false
+  const next: Record<string, unknown> = { ...config }
+
+  for (const key of ['columnVisibility', 'columnWidths', 'summary', 'groupSort']) {
+    const map = next[key]
+    if (map && typeof map === 'object' && oldName in (map as Record<string, unknown>)) {
+      const copy = { ...(map as Record<string, unknown>) }
+      copy[newName] = copy[oldName]
+      delete copy[oldName]
+      next[key] = copy
+      touched = true
+    }
+  }
+
+  if (Array.isArray(next['columnOrder']) && next['columnOrder'].includes(oldName)) {
+    next['columnOrder'] = (next['columnOrder'] as string[]).map((c) =>
+      c === oldName ? newName : c,
+    )
+    touched = true
+  }
+
+  if (Array.isArray(next['grouping']) && next['grouping'].includes(oldName)) {
+    next['grouping'] = (next['grouping'] as string[]).map((c) =>
+      c === oldName ? newName : c,
+    )
+    touched = true
+  }
+
+  if (Array.isArray(next['sort'])) {
+    const sort = next['sort'] as Array<{ column?: string }>
+    const renamed = sort.map((rule) =>
+      rule.column === oldName ? { ...rule, column: newName } : rule,
+    )
+    if (renamed.some((rule, i) => rule !== sort[i])) {
+      next['sort'] = renamed
+      touched = true
+    }
+  }
+
+  const filter = next['filter']
+  if (filter && typeof filter === 'object') {
+    const renamed = renameInFilter(filter as Record<string, unknown>, oldName, newName)
+    if (renamed !== filter) {
+      next['filter'] = renamed
+      touched = true
+    }
+  }
+
+  return touched ? next : null
+}
+
+function renameInFilter(
+  node: Record<string, unknown>,
+  oldName: string,
+  newName: string,
+): Record<string, unknown> {
+  if (node['kind'] === 'condition') {
+    return node['column'] === oldName ? { ...node, column: newName } : node
+  }
+  if (node['kind'] !== 'group' || !Array.isArray(node['children'])) return node
+
+  const children = (node['children'] as Array<Record<string, unknown>>).map((child) =>
+    renameInFilter(child, oldName, newName),
+  )
+  if (children.every((child, i) => child === (node['children'] as unknown[])[i])) return node
   return { ...node, children }
 }
 

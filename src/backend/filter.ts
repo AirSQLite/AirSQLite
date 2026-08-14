@@ -31,6 +31,8 @@ export interface FilterContext {
   columns: Set<string>
   /** Foreign key columns, keyed by the column name in *this* table. */
   links?: Map<string, LinkTarget>
+  /** Computed column name → SQL expression. Used in place of quoting the column name. */
+  computedExprs?: Map<string, string>
 }
 
 /** Double-quote an identifier, escaping any embedded quote. */
@@ -64,7 +66,8 @@ function compileCondition(condition: FilterCondition, ctx: FilterContext): Compi
     throw new ProtocolError(`There is no column named "${condition.column}" in this table.`)
   }
 
-  const col = quoteIdent(condition.column)
+  const expr = ctx.computedExprs?.get(condition.column)
+  const col = expr ? `(${expr})` : quoteIdent(condition.column)
   const link = ctx.links?.get(condition.column)
   const like = (pattern: string): CompiledFilter => ({
     sql: `${col} LIKE ? ESCAPE '\\'`,

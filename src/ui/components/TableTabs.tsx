@@ -292,7 +292,7 @@ export function TableTabs({
             title="Create a table"
             onClick={() => setNaming(true)}
           >
-            +
+            <span dangerouslySetInnerHTML={{ __html: menuIcon('plus', { size: 14 }) }} />
           </button>
         )
       ) : null}

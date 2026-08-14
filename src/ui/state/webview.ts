@@ -10,6 +10,8 @@
 
 export interface WebviewApi {
   postMessage(message: unknown): void
+  getState(): Record<string, unknown> | undefined
+  setState(state: Record<string, unknown>): void
 }
 
 declare global {

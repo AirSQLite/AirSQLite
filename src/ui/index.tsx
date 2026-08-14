@@ -3,6 +3,7 @@ import { render } from 'preact'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import type {
   ActionDefinition,
+  ColumnDescriptor,
   DisplayType,
   FilterNode,
   RecordLocator,
@@ -24,6 +25,7 @@ import { SummaryBar } from './components/SummaryBar.js'
 import { TableTabs } from './components/TableTabs.js'
 import { ToastHost, useToasts } from './components/Toast.js'
 import { ViewSwitcher, ViewsPanel } from './components/ViewSwitcher.js'
+import { fieldTypeIcon, menuIcon } from './components/FieldTypeIcons.js'
 import { Client } from './state/client.js'
 import { flatView, groupedView, layoutGroups, useGrouping } from './state/grouping.js'
 import type { CellCursor } from './state/selection.js'
@@ -41,6 +43,7 @@ import {
 } from './state/store.js'
 import { createTransport } from './state/transport.js'
 import { createHostServices, type HostServices } from './state/host.js'
+import { webviewApi } from './state/webview.js'
 import { layOutColumns, useViews, type LaidOutColumn } from './state/views.js'
 import { exportViewToCsv } from './state/csv.js'
 import { useDismissOnOutside } from './state/dismiss.js'
@@ -78,7 +81,9 @@ function pinPrimary(columns: LaidOutColumn[], primaryField: string): LaidOutColu
 }
 
 function App({ client, host }: { client: Client; host: HostServices }) {
-  const workspace = useWorkspace(client)
+  const api = webviewApi()
+  const savedTable = useMemo(() => (api?.getState()?.['activeTable'] as string) ?? null, [api])
+  const workspace = useWorkspace(client, savedTable)
   const toasts = useToasts()
 
   const [selected, setSelected] = useState<Set<number>>(new Set())
@@ -93,6 +98,8 @@ function App({ client, host }: { client: Client; host: HostServices }) {
   const [showViews, setShowViews] = useState(false)
   /** Non-null while the new-field dialog is up; the value is where it will sit in the view. */
   const [newField, setNewField] = useState<{ beside?: { column: string; side: 'left' | 'right' } } | null>(null)
+  /** Non-null while the rename-column dialog is up. */
+  const [renamingColumn, setRenamingColumn] = useState<string | null>(null)
 
   /**
    * Which record the detail panel is showing. Carrying the *table* alongside the rowid is
@@ -105,6 +112,12 @@ function App({ client, host }: { client: Client; host: HostServices }) {
    * the very next click anywhere in that row, since a cell click opens the record.
    */
   const dismissed = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (workspace.activeTable && api) {
+      api.setState({ ...api.getState(), activeTable: workspace.activeTable })
+    }
+  }, [workspace.activeTable, api])
 
   const views = useViews(client, workspace.activeTable, canConfigure)
   const sort = useMemo(() => views.config.sort ?? [], [views.config.sort])
@@ -149,6 +162,7 @@ function App({ client, host }: { client: Client; host: HostServices }) {
   // Grouping columns sort ahead of the user's sort, so a group's rows are contiguous at a
   // fixed offset. Everything in state/grouping.ts depends on that.
   const groupColumns = useMemo(() => views.config.grouping ?? [], [views.config.grouping])
+  const groupSortConfig = useMemo(() => views.config.groupSort ?? {}, [views.config.groupSort])
   /**
    * Which total sits under each column. One source now: the active view.
    *
@@ -180,14 +194,14 @@ function App({ client, host }: { client: Client; host: HostServices }) {
       filter: views.config.filter ?? null,
       search,
       ...(searchColumns.length > 0 ? { searchColumns } : {}),
-      ...(groupColumns.length > 0 ? { groupBy: groupColumns } : {}),
+      ...(groupColumns.length > 0 ? { groupBy: groupColumns, groupSort: groupSortConfig } : {}),
     }),
-    [sort, views.config.filter, search, searchColumns, groupColumns],
+    [sort, views.config.filter, search, searchColumns, groupColumns, groupSortConfig],
   )
 
   const data = useTableData(client, workspace.activeTable, querySpec, announceChange)
   const summaryValues = useSummary(client, workspace.activeTable, summaryConfig, querySpec)
-  const grouping = useGrouping(client, workspace.activeTable, groupColumns, querySpec)
+  const grouping = useGrouping(client, workspace.activeTable, groupColumns, querySpec, summaryConfig)
 
   /**
    * What the grid actually paints. Ungrouped, a display slot is a row and the numbers are the
@@ -713,7 +727,7 @@ function App({ client, host }: { client: Client; host: HostServices }) {
 
           setRunningAction(null)
           setConfirm({
-            title: `Run “${action.label}”?`,
+            title: `Run "${action.label}"?`,
             detail:
               action.type === 'script'
                 ? 'This will run a shell command on your machine, as configured in this database file.'
@@ -791,10 +805,14 @@ function App({ client, host }: { client: Client; host: HostServices }) {
   const handleGroupBy = useCallback(
     (column: string, grouped: boolean) => {
       const current = views.config.grouping ?? []
-      // Order matters — it is the nesting order, so a newly checked column goes innermost.
       const next = grouped ? [...current.filter((c) => c !== column), column] : current.filter((c) => c !== column)
       views.update({ grouping: next })
     },
+    [views],
+  )
+
+  const handleReorderGrouping = useCallback(
+    (next: string[]) => views.update({ grouping: next }),
     [views],
   )
 
@@ -1010,6 +1028,11 @@ function App({ client, host }: { client: Client; host: HostServices }) {
    * one. There is no sensible default, so both are offered as buttons rather than a checkbox
    * with a guess in it.
    */
+  const handleRenameColumn = useCallback(
+    (column: string) => setRenamingColumn(column),
+    [],
+  )
+
   const handleDuplicateColumn = useCallback(
     (column: string) => {
       if (!table) return
@@ -1189,7 +1212,14 @@ function App({ client, host }: { client: Client; host: HostServices }) {
         <GroupMenu
           columns={schema.columns}
           grouping={groupColumns}
+          groupSort={groupSortConfig}
           onToggle={handleGroupBy}
+          onReorder={handleReorderGrouping}
+          onSetGroupSort={(column, direction) => {
+            const next = { ...groupSortConfig, [column]: direction }
+            if (direction === 'asc') delete next[column]
+            views.update({ groupSort: Object.keys(next).length > 0 ? next : undefined })
+          }}
           onCollapseAll={grouping.collapseAll}
           onExpandAll={grouping.expandAll}
         />
@@ -1244,6 +1274,9 @@ function App({ client, host }: { client: Client; host: HostServices }) {
                 client={client}
                 links={links}
                 view={view}
+                grouping={groupColumns}
+                allColumns={schema.columns}
+                summaryConfig={summaryConfig}
                 onToggleGroup={grouping.toggle}
                 onUndo={() => runHistory('undo')}
                 onRedo={() => runHistory('redo')}
@@ -1264,6 +1297,7 @@ function App({ client, host }: { client: Client; host: HostServices }) {
                 onHarvestValues={handleHarvestValues}
                 primaryField={primaryField}
                 onSetPrimary={handleSetPrimary}
+                onRenameColumn={handleRenameColumn}
                 onDuplicateColumn={handleDuplicateColumn}
                 onDeleteColumn={handleDeleteColumn}
                 onAddColumn={(beside) => setNewField(beside ? { beside } : {})}
@@ -1323,6 +1357,27 @@ function App({ client, host }: { client: Client; host: HostServices }) {
                   })
                 }}
               />
+              {data.rowCount === 0 && !data.loading ? (
+                <div class="afs-empty" data-testid="empty-table">
+                  {data.totalCount !== undefined && data.totalCount > 0 ? (
+                    <strong>No matching records</strong>
+                  ) : (
+                    <>
+                      <strong>No records yet</strong>
+                      {editable ? (
+                        <button
+                          type="button"
+                          class="afs-button afs-button--primary"
+                          data-testid="empty-add-row"
+                          onClick={handleAddRow}
+                        >
+                          Add row
+                        </button>
+                      ) : null}
+                    </>
+                  )}
+                </div>
+              ) : null}
               <SummaryBar
                 scrollLeft={gridScrollLeft}
                 columns={layout}
@@ -1336,21 +1391,6 @@ function App({ client, host }: { client: Client; host: HostServices }) {
                 totalCount={data.totalCount}
                 trailingWidth={trailingWidth(gridActions.length, canConfigure) + gridScrollbarWidth}
               />
-              {data.rowCount === 0 && !data.loading ? (
-                <div class="afs-empty" data-testid="empty-table">
-                  <strong>No records yet</strong>
-                  {editable ? (
-                    <button
-                      type="button"
-                      class="afs-button afs-button--primary"
-                      data-testid="empty-add-row"
-                      onClick={handleAddRow}
-                    >
-                      Add row
-                    </button>
-                  ) : null}
-                </div>
-              ) : null}
             </>
           )}
         </div>
@@ -1388,6 +1428,20 @@ function App({ client, host }: { client: Client; host: HostServices }) {
             const pending = newField
             setNewField(null)
             handleAddColumn(name, columnType, pending.beside, displayType)
+          }}
+        />
+      ) : null}
+
+      {renamingColumn && table ? (
+        <RenameColumnDialog
+          column={renamingColumn}
+          onCancel={() => setRenamingColumn(null)}
+          onRename={(newName) => {
+            setRenamingColumn(null)
+            void client
+              .renameColumn(table, renamingColumn, newName)
+              .then(() => reloadMeta())
+              .catch((err: Error) => toasts.error(err.message))
           }}
         />
       ) : null}
@@ -1430,23 +1484,43 @@ function App({ client, host }: { client: Client; host: HostServices }) {
 function GroupMenu({
   columns,
   grouping,
+  groupSort,
   onToggle,
+  onReorder,
+  onSetGroupSort,
   onCollapseAll,
   onExpandAll,
 }: {
-  columns: Array<{ name: string; virtual?: boolean }>
+  columns: ColumnDescriptor[]
   grouping: string[]
+  groupSort: Record<string, 'asc' | 'desc'>
   onToggle: (column: string, grouped: boolean) => void
+  onReorder: (grouping: string[]) => void
+  onSetGroupSort: (column: string, direction: 'asc' | 'desc') => void
   onCollapseAll: () => void
   onExpandAll: () => void
 }) {
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
+  const [dragIndex, setDragIndex] = useState<number | null>(null)
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
   const container = useDismissOnOutside(open, useCallback(() => setOpen(false), []))
 
-  // Created and Modified come from the changelog; SQLite has no column to GROUP BY.
   const groupable = columns.filter((column) => !column.virtual)
-  const shown = groupable.filter((column) => matches(column.name, filter))
+  const grouped = grouping.map((name) => groupable.find((c) => c.name === name)).filter(Boolean) as ColumnDescriptor[]
+  const ungrouped = groupable.filter((column) => !grouping.includes(column.name))
+  const shownUngrouped = ungrouped.filter((column) => matches(column.name, filter))
+
+  const handleDragEnd = () => {
+    if (dragIndex !== null && dragOverIndex !== null && dragIndex !== dragOverIndex) {
+      const next = [...grouping]
+      const [moved] = next.splice(dragIndex, 1)
+      if (moved !== undefined) next.splice(dragOverIndex, 0, moved)
+      onReorder(next)
+    }
+    setDragIndex(null)
+    setDragOverIndex(null)
+  }
 
   return (
     <span class="afs-columns-menu" ref={container}>
@@ -1463,54 +1537,92 @@ function GroupMenu({
       </button>
       {open ? (
         <div class="afs-menu afs-menu--anchored" data-testid="group-menu">
-          <MenuFilter
-            testid="group-filter"
-            count={groupable.length}
-            value={filter}
-            onInput={setFilter}
-          />
-          {shown.length === 0 ? (
-            <p class="afs-menu__hint" data-testid="group-filter-empty">
-              No column matches “{filter}”.
-            </p>
-          ) : null}
-          {shown
-            .map((column) => (
-              <label key={column.name} class="afs-menu__check">
-                <input
-                  type="checkbox"
-                  data-testid={`group-by-${column.name}`}
-                  checked={grouping.includes(column.name)}
-                  onChange={(event) =>
-                    onToggle(column.name, (event.currentTarget as HTMLInputElement).checked)
-                  }
-                />
-                {column.name}
-                {grouping.includes(column.name) ? (
-                  <span class="afs-menu__hint"> {grouping.indexOf(column.name) + 1}</span>
-                ) : null}
-              </label>
-            ))}
           {grouping.length > 0 ? (
-            <div class="afs-menu__section">
-              <button
-                type="button"
-                class="afs-menu__item"
-                data-testid="group-collapse-all"
-                onClick={onCollapseAll}
-              >
-                Collapse all
+            <div class="afs-menu__toolbar">
+              <button type="button" class="afs-button" data-testid="group-collapse-all" title="Collapse all" onClick={onCollapseAll}>
+                <span class="afs-menu__item-icon" dangerouslySetInnerHTML={{ __html: menuIcon('minimize', { size: 14 }) }} />
+                Collapse
               </button>
-              <button
-                type="button"
-                class="afs-menu__item"
-                data-testid="group-expand-all"
-                onClick={onExpandAll}
-              >
-                Expand all
+              <button type="button" class="afs-button" data-testid="group-expand-all" title="Expand all" onClick={onExpandAll}>
+                <span class="afs-menu__item-icon" dangerouslySetInnerHTML={{ __html: menuIcon('expand', { size: 14 }) }} />
+                Expand
+              </button>
+              <button type="button" class="afs-button" data-testid="group-clear-all" title="Clear all" onClick={() => onReorder([])}>
+                <span class="afs-menu__item-icon" dangerouslySetInnerHTML={{ __html: menuIcon('x', { size: 14 }) }} />
+                Clear
               </button>
             </div>
           ) : null}
+
+          {grouped.length > 0 ? (
+            <div class="afs-menu__section">
+              {grouped.map((column, index) => (
+                <div
+                  key={column.name}
+                  class={`afs-menu__drag-item${dragOverIndex === index ? ' afs-menu__drag-item--over' : ''}`}
+                  draggable
+                  data-testid={`group-drag-${column.name}`}
+                  onDragStart={() => setDragIndex(index)}
+                  onDragOver={(event) => {
+                    event.preventDefault()
+                    setDragOverIndex(index)
+                  }}
+                  onDragEnd={handleDragEnd}
+                >
+                  <span class="afs-menu__drag-handle" dangerouslySetInnerHTML={{ __html: menuIcon('grip_vertical', { size: 12 }) }} />
+                  <span
+                    class="afs-menu__item-icon"
+                    dangerouslySetInnerHTML={{ __html: fieldTypeIcon(column.displayType, { size: 14 }) ?? '' }}
+                  />
+                  {column.name}
+                  <button
+                    type="button"
+                    class="afs-menu__drag-sort"
+                    data-testid={`group-sort-${column.name}`}
+                    title={groupSort[column.name] === 'desc' ? 'Sorted descending' : 'Sorted ascending'}
+                    onClick={() => onSetGroupSort(column.name, groupSort[column.name] === 'desc' ? 'asc' : 'desc')}
+                  >
+                    <span dangerouslySetInnerHTML={{ __html: menuIcon(groupSort[column.name] === 'desc' ? 'arrow_down' : 'arrow_up', { size: 12 }) }} />
+                  </button>
+                  <button
+                    type="button"
+                    class="afs-menu__drag-remove"
+                    data-testid={`group-remove-${column.name}`}
+                    onClick={() => onToggle(column.name, false)}
+                  >
+                    <span dangerouslySetInnerHTML={{ __html: menuIcon('x', { size: 12 }) }} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          <MenuFilter
+            testid="group-filter"
+            count={ungrouped.length}
+            value={filter}
+            onInput={setFilter}
+          />
+          {shownUngrouped.length === 0 && ungrouped.length > 0 ? (
+            <p class="afs-menu__hint" data-testid="group-filter-empty">
+              No column matches "{filter}".
+            </p>
+          ) : null}
+          {shownUngrouped.map((column) => (
+            <label key={column.name} class="afs-menu__check">
+              <input
+                type="checkbox"
+                data-testid={`group-by-${column.name}`}
+                checked={false}
+                onChange={() => onToggle(column.name, true)}
+              />
+              <span
+                class="afs-menu__item-icon"
+                dangerouslySetInnerHTML={{ __html: fieldTypeIcon(column.displayType, { size: 14 }) ?? '' }}
+              />
+              {column.name}
+            </label>
+          ))}
         </div>
       ) : null}
     </span>
@@ -1594,14 +1706,13 @@ function MenuFilter({
   value: string
   onInput: (next: string) => void
 }) {
-  if (count < FILTER_THRESHOLD) return null
   return (
     <input
       class="afs-menu__input afs-menu__filter"
       data-testid={testid}
       type="search"
       autofocus
-      placeholder={`Filter ${count} columns…`}
+      placeholder={`Search ${count} columns…`}
       value={value}
       onInput={(event) => onInput((event.currentTarget as HTMLInputElement).value)}
       // Escape clears the filter first and only closes the menu once it is already empty.
@@ -1625,7 +1736,7 @@ function HiddenColumnsMenu({
   visibility,
   onToggle,
 }: {
-  columns: Array<{ name: string }>
+  columns: ColumnDescriptor[]
   visibility: Record<string, boolean>
   onToggle: (column: string, visible: boolean) => void
 }) {
@@ -1650,6 +1761,16 @@ function HiddenColumnsMenu({
       </button>
       {open ? (
         <div class="afs-menu afs-menu--anchored" data-testid="columns-menu">
+          <div class="afs-menu__toolbar">
+            <button type="button" class="afs-button" data-testid="columns-show-all" title="Show all" onClick={() => columns.forEach((c) => onToggle(c.name, true))}>
+              <span class="afs-menu__item-icon" dangerouslySetInnerHTML={{ __html: menuIcon('eye', { size: 14 }) }} />
+              Show all
+            </button>
+            <button type="button" class="afs-button" data-testid="columns-hide-all" title="Hide all" onClick={() => columns.forEach((c) => onToggle(c.name, false))}>
+              <span class="afs-menu__item-icon" dangerouslySetInnerHTML={{ __html: menuIcon('hide', { size: 14 }) }} />
+              Hide all
+            </button>
+          </div>
           <MenuFilter
             testid="columns-filter"
             count={columns.length}
@@ -1658,7 +1779,7 @@ function HiddenColumnsMenu({
           />
           {shown.length === 0 ? (
             <p class="afs-menu__hint" data-testid="columns-filter-empty">
-              No column matches “{filter}”.
+              No column matches "{filter}".
             </p>
           ) : null}
           {shown.map((column) => (
@@ -1670,6 +1791,10 @@ function HiddenColumnsMenu({
                 onChange={(event) =>
                   onToggle(column.name, (event.currentTarget as HTMLInputElement).checked)
                 }
+              />
+              <span
+                class="afs-menu__item-icon"
+                dangerouslySetInnerHTML={{ __html: fieldTypeIcon(column.displayType, { size: 14 }) ?? '' }}
               />
               {column.name}
             </label>
@@ -1699,6 +1824,73 @@ function findRow(data: ReturnType<typeof useTableData>, rowid: number): Row | un
     if (row?.rowid === rowid) return row
   }
   return undefined
+}
+
+function RenameColumnDialog({
+  column,
+  onRename,
+  onCancel,
+}: {
+  column: string
+  onRename: (newName: string) => void
+  onCancel: () => void
+}) {
+  const [name, setName] = useState(column)
+  const input = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    input.current?.focus()
+    input.current?.select()
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onCancel()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onCancel])
+
+  const commit = () => {
+    const trimmed = name.trim()
+    if (trimmed && trimmed !== column) onRename(trimmed)
+    else onCancel()
+  }
+
+  return (
+    <div class="afs-modal-backdrop" data-testid="rename-column-dialog" onClick={onCancel}>
+      <div
+        class="afs-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Edit column name"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <strong>Edit column name</strong>
+        <input
+          ref={input}
+          class="afs-menu__input"
+          data-testid="rename-input"
+          value={name}
+          onInput={(event) => setName((event.currentTarget as HTMLInputElement).value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') commit()
+          }}
+        />
+        <div class="afs-modal__actions">
+          <button type="button" class="afs-button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            class="afs-button afs-button--primary"
+            data-testid="rename-confirm"
+            disabled={!name.trim() || name.trim() === column}
+            onClick={commit}
+          >
+            Rename
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function Root() {

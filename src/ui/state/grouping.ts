@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'preact/hooks'
-import type { GroupInfo, SqlValue } from '../../shared/protocol.js'
+import type { GroupInfo, SqlValue, SummaryFunction, SummaryResult } from '../../shared/protocol.js'
 import type { Client } from './client.js'
 import type { QuerySpec, TableData } from './store.js'
+import { webviewApi } from './webview.js'
 
 // Grouping, without giving up virtual scroll.
 //
@@ -26,6 +27,8 @@ export interface GroupNode {
   /** Absolute row offset of this node's first record in the server ordering. */
   rowStart: number
   children: GroupNode[]
+  /** Per-column aggregates for this group (leaf nodes only; parents aggregate from children). */
+  summary?: SummaryResult
 }
 
 /** What occupies one display slot. */
@@ -68,7 +71,7 @@ export function groupKey(values: SqlValue[]): string {
  * The leaves arrive ordered by every grouping column, so a parent is simply a run of
  * consecutive leaves sharing a prefix — no sorting, no grouping pass, one walk.
  */
-export function buildGroupTree(groups: GroupInfo[], depth: number): GroupNode[] {
+export function buildGroupTree(groups: GroupInfo[], depth: number, summarySpec?: Record<string, SummaryFunction>): GroupNode[] {
   if (depth === 0 || groups.length === 0) return []
 
   const roots: GroupNode[] = []
@@ -92,6 +95,9 @@ export function buildGroupTree(groups: GroupInfo[], depth: number): GroupNode[] 
       }
 
       node.count += group.count
+      if (group.summary) {
+        node.summary = mergeSummaries(node.summary, group.summary, node.count - group.count, group.count, summarySpec)
+      }
       parent = node
       siblings = node.children
     }
@@ -100,6 +106,42 @@ export function buildGroupTree(groups: GroupInfo[], depth: number): GroupNode[] 
   }
 
   return roots
+}
+
+function mergeSummaries(
+  existing: SummaryResult | undefined,
+  incoming: SummaryResult,
+  existingCount: number,
+  incomingCount: number,
+  spec?: Record<string, SummaryFunction>,
+): SummaryResult {
+  if (!existing) return { ...incoming }
+  const merged: SummaryResult = {}
+  for (const key of Object.keys(incoming)) {
+    const fn = spec?.[key]
+    const a = existing[key] ?? null
+    const b = incoming[key] ?? null
+    if (a === null) { merged[key] = b; continue }
+    if (b === null || b === undefined) { merged[key] = a; continue }
+    const na = typeof a === 'number' ? a : Number(a)
+    const nb = typeof b === 'number' ? b : Number(b)
+    if (!Number.isFinite(na) || !Number.isFinite(nb)) { merged[key] = b; continue }
+    switch (fn) {
+      case 'sum': case 'count': case 'count_empty': case 'count_not_empty':
+        merged[key] = na + nb; break
+      case 'average':
+        merged[key] = (na * existingCount + nb * incomingCount) / (existingCount + incomingCount); break
+      case 'min':
+        merged[key] = Math.min(na, nb); break
+      case 'max':
+        merged[key] = Math.max(na, nb); break
+      case 'percent_empty':
+        merged[key] = (na * existingCount + nb * incomingCount) / (existingCount + incomingCount); break
+      default:
+        merged[key] = nb
+    }
+  }
+  return merged
 }
 
 /** Flatten a tree into display segments, honouring which nodes are collapsed. */
@@ -206,21 +248,48 @@ export function groupedView(
 /**
  * Fetch the group list for the current table and query, and hold which nodes are collapsed.
  *
- * Collapse state is session-scoped on purpose. It is not in `ViewConfig`: a saved view
- * describes how a table is *arranged*, and which twisties happen to be open is a scroll
- * position, not an arrangement.
+ * Collapse state persists across reloads via the VS Code webview state API, keyed by table
+ * name. It resets when the grouping columns change — the node identities would mean something
+ * different, so keeping them would collapse arbitrary groups.
  */
 export function useGrouping(
   client: Client,
   table: string | null,
   columns: string[],
   spec: QuerySpec,
+  summaryConfig?: Record<string, SummaryFunction>,
 ) {
   const [groups, setGroups] = useState<GroupInfo[]>([])
   const [error, setError] = useState<string | null>(null)
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const api = webviewApi()
+  const stateKey = table ? `collapsed:${table}` : null
 
-  const specKey = JSON.stringify({ filter: spec.filter, search: spec.search, columns })
+  const restoreCollapsed = useCallback((): Set<string> => {
+    if (!stateKey || !api) return new Set()
+    const saved = api.getState()?.[stateKey]
+    return Array.isArray(saved) ? new Set(saved as string[]) : new Set()
+  }, [api, stateKey])
+
+  const [collapsed, setCollapsedRaw] = useState<Set<string>>(restoreCollapsed)
+
+  const persistCollapsed = useCallback((next: Set<string>) => {
+    if (!api || !stateKey) return
+    const ws = { ...api.getState() }
+    if (next.size > 0) ws[stateKey] = [...next]
+    else delete ws[stateKey]
+    api.setState(ws)
+  }, [api, stateKey])
+
+  const setCollapsed = useCallback((next: Set<string> | ((prev: Set<string>) => Set<string>)) => {
+    setCollapsedRaw((prev) => {
+      const resolved = typeof next === 'function' ? next(prev) : next
+      persistCollapsed(resolved)
+      return resolved
+    })
+  }, [persistCollapsed])
+
+  const summaryKey = JSON.stringify(summaryConfig ?? {})
+  const specKey = JSON.stringify({ filter: spec.filter, search: spec.search, columns, summary: summaryKey, groupSort: spec.groupSort })
 
   useEffect(() => {
     setGroups([])
@@ -229,7 +298,7 @@ export function useGrouping(
 
     let cancelled = false
     void client
-      .groups(table, columns, spec)
+      .groups(table, columns, { ...spec, summary: summaryConfig })
       .then((result) => {
         if (!cancelled) setGroups(result)
       })
@@ -243,11 +312,14 @@ export function useGrouping(
     // eslint-disable-next-line react-hooks/exhaustive-deps -- specKey stands in for spec
   }, [client, table, specKey])
 
-  // Collapsing survives a refetch but not a change of grouping: the node identities would
-  // mean something different, so keeping them would collapse arbitrary groups.
-  useEffect(() => setCollapsed(new Set()), [table, columns.join(' ')])
+  const columnsKey = columns.join(' ')
+  useEffect(() => {
+    setCollapsedRaw(restoreCollapsed())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [table, columnsKey])
 
-  const tree = useMemo(() => buildGroupTree(groups, columns.length), [groups, columns.length])
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- summaryKey stands in for summaryConfig
+  const tree = useMemo(() => buildGroupTree(groups, columns.length, summaryConfig), [groups, columns.length, summaryKey])
 
   const toggle = useCallback((values: SqlValue[]) => {
     const id = groupKey(values)
@@ -257,7 +329,7 @@ export function useGrouping(
       else next.add(id)
       return next
     })
-  }, [])
+  }, [setCollapsed])
 
   const collapseAll = useCallback(() => {
     const ids: string[] = []
@@ -269,9 +341,9 @@ export function useGrouping(
     }
     walk(tree)
     setCollapsed(new Set(ids))
-  }, [tree])
+  }, [tree, setCollapsed])
 
-  const expandAll = useCallback(() => setCollapsed(new Set()), [])
+  const expandAll = useCallback(() => setCollapsed(new Set()), [setCollapsed])
 
   return { groups, tree, collapsed, error, toggle, collapseAll, expandAll }
 }

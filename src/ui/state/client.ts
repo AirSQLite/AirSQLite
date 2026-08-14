@@ -92,7 +92,7 @@ export class Client {
   groups(
     table: string,
     columns: string[],
-    scope: { filter?: FilterNode | null; search?: string | null; searchColumns?: string[] } = {},
+    scope: { summary?: Record<string, SummaryFunction>; filter?: FilterNode | null; search?: string | null; searchColumns?: string[] } = {},
   ): Promise<GroupInfo[]> {
     return this.#transport.request({ type: 'groups', table, columns, ...scope })
   }
@@ -213,6 +213,10 @@ export class Client {
 
   dropColumn(table: string, column: string): Promise<unknown> {
     return this.#transport.request({ type: 'drop-column', table, column })
+  }
+
+  renameColumn(table: string, column: string, name: string): Promise<{ name: string }> {
+    return this.#transport.request({ type: 'rename-column', table, column, name })
   }
 
   duplicateColumn(

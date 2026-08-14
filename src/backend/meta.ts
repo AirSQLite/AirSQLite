@@ -11,6 +11,7 @@ import type {
 import { ROWID_COLUMN, CREATED_COLUMN, MODIFIED_COLUMN } from '../shared/protocol.js'
 import type { Db } from './db.js'
 import { ProtocolError, mapSqliteError } from './errors.js'
+import { quoteIdent } from './filter.js'
 
 // Configuration lives inside the database file, in four `_airsqlite_*` tables created on first
 // open. No sidecar config, no application-support directory: copy the .db somewhere else and
@@ -547,11 +548,10 @@ export class Meta {
     const columns = this.#db.columns(table)
     const stored = this.storedDisplays(table)
     const samples = this.#sample(table, columns)
+    const physicalNames = new Set(columns.map((c) => c.name))
 
     const described: ColumnDescriptor[] = columns.map((column) => {
       const configured = stored.get(column.name)
-      // The description is independent of the display type: a row may carry one with no type
-      // ever chosen, in which case the type is still inferred.
       const description = configured?.description ?? null
 
       if (configured?.displayType) return { ...column, ...configured, description }
@@ -565,17 +565,63 @@ export class Meta {
       }
     })
 
+    for (const [name, cfg] of stored) {
+      if (physicalNames.has(name)) continue
+      const opts = cfg.options as Record<string, unknown> | null
+      if (!opts?.computed) continue
+
+      const formula = opts.formula as string | undefined
+      if (!formula) continue
+
+      let formulaError: string | undefined
+      try {
+        this.#db.connection.prepare(`SELECT (${formula}) FROM ${quoteIdent(table)} LIMIT 0`).run()
+      } catch (err) {
+        formulaError = (err as Error).message
+      }
+
+      described.push({
+        name,
+        declaredType: '',
+        affinity: 'TEXT',
+        notNull: false,
+        defaultValue: null,
+        primaryKeyIndex: 0,
+        displayType: cfg.displayType ?? 'text',
+        displayTypeInferred: !cfg.displayType,
+        options: opts,
+        description: cfg.description,
+        computed: true,
+        formula,
+        formulaError,
+      })
+    }
+
     return [...described, ...systemColumns(columns, stored)]
   }
 
   setColumnDisplay(table: string, column: string, display: Partial<ColumnDisplay>): void {
     this.#requireWritable()
-    if (!SYSTEM_COLUMNS.has(column) && !this.#db.columns(table).some((c) => c.name === column)) {
-      throw new ProtocolError(`There is no column named "${column}" in "${table}".`)
+    const isPhysical = this.#db.columns(table).some((c) => c.name === column)
+    const isSystem = SYSTEM_COLUMNS.has(column)
+    if (!isPhysical && !isSystem) {
+      const existing = this.storedDisplays(table).get(column)
+      if (!existing?.options || !(existing.options as Record<string, unknown>)['computed']) {
+        throw new ProtocolError(`There is no column named "${column}" in "${table}".`)
+      }
     }
     const type = display.displayType ?? 'text'
     if (!DISPLAY_TYPES.has(type)) {
       throw new ProtocolError(`"${type}" is not a field type this tool knows about.`)
+    }
+
+    let options = display.options
+    if (!isSystem && !isPhysical) {
+      const stored = this.storedDisplays(table).get(column)
+      const storedOpts = stored?.options as Record<string, unknown> | null
+      if (storedOpts?.computed) {
+        options = { ...options, computed: storedOpts.computed, formula: storedOpts.formula }
+      }
     }
 
     this.#db.connection
@@ -585,7 +631,7 @@ export class Meta {
          ON CONFLICT (table_name, column_name)
          DO UPDATE SET display_type = excluded.display_type, options = excluded.options`,
       )
-      .run(table, column, type, display.options ? JSON.stringify(display.options) : null)
+      .run(table, column, type, options ? JSON.stringify(options) : null)
   }
 
   /**
@@ -606,8 +652,12 @@ export class Meta {
    */
   setColumnDescription(table: string, column: string, description: string | null): void {
     this.#requireWritable()
-    if (!this.#db.columns(table).some((c) => c.name === column)) {
-      throw new ProtocolError(`There is no column named "${column}" in "${table}".`)
+    const isPhysical = this.#db.columns(table).some((c) => c.name === column)
+    if (!isPhysical) {
+      const existing = this.storedDisplays(table).get(column)
+      if (!existing?.options || !(existing.options as Record<string, unknown>)['computed']) {
+        throw new ProtocolError(`There is no column named "${column}" in "${table}".`)
+      }
     }
 
     const value = description?.trim() ? description.trim() : null

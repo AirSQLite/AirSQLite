@@ -35,7 +35,7 @@ export interface WorkspaceState {
   activeTable: string | null
 }
 
-export function useWorkspace(client: Client) {
+export function useWorkspace(client: Client, preferredTable?: string | null) {
   const [state, setState] = useState<WorkspaceState>({
     status: 'connecting',
     error: null,
@@ -51,12 +51,15 @@ export function useWorkspace(client: Client) {
       try {
         const [{ dbPath }, tables] = await Promise.all([client.ping(), client.tables()])
         if (cancelled) return
+        const saved = preferredTable && tables.some((t) => t.name === preferredTable)
+          ? preferredTable
+          : null
         setState({
           status: 'ready',
           error: null,
           dbPath,
           tables,
-          activeTable: tables[0]?.name ?? null,
+          activeTable: saved ?? tables[0]?.name ?? null,
         })
       } catch (err) {
         if (cancelled) return
@@ -154,6 +157,8 @@ export interface QuerySpec {
   searchColumns?: string[]
   /** Grouping columns. They sort ahead of `sort`, which is what keeps groups contiguous. */
   groupBy?: string[]
+  /** Sort direction per grouping column. Absent keys default to 'asc'. */
+  groupSort?: Record<string, 'asc' | 'desc'>
 }
 
 /**
@@ -192,6 +197,14 @@ export function useTableColumns(client: Client, table: string | null) {
       cancelled = true
     }
   }, [client, table, generation])
+
+  useEffect(
+    () =>
+      client.onEvent((event) => {
+        if (event.type === 'db-changed') setGeneration((n) => n + 1)
+      }),
+    [client],
+  )
 
   /** Refetch — after a display type changes, for instance. */
   const reload = useCallback(() => setGeneration((n) => n + 1), [])

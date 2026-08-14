@@ -165,7 +165,7 @@ export function SummaryBar({
                 <>
                   <span class="afs-summary__label">{LABELS.get(fn)}</span>
                   <span class="afs-summary__value" data-testid={`summary-${descriptor.name}`}>
-                    {display(values[descriptor.name], descriptor.displayType, fn)}
+                    {display(values[descriptor.name], descriptor.displayType, fn, descriptor.options)}
                   </span>
                 </>
               ) : (
@@ -221,14 +221,18 @@ export function SummaryBar({
  * A summary of nothing is not zero. SUM over an empty set and AVG over all-NULL both come
  * back NULL, and printing 0 there would assert something the data does not say.
  */
-function display(value: SqlValue | undefined, type?: DisplayType, fn?: SummaryFunction): string {
+function display(value: SqlValue | undefined, type?: DisplayType, fn?: SummaryFunction, options?: Record<string, unknown> | null): string {
   if (value === null || value === undefined) return '—'
 
-  // A sum or average of a money column is money. A *count* of one is not — "$8.00 filled" would
-  // be nonsense — so only the functions that stay in the column's own units get formatted.
   if (type === 'currency' && fn && MONETARY.has(fn)) {
-    const money = formatCurrency(value)
+    const showCents = (options?.showCents as boolean) ?? true
+    const money = formatCurrency(value, showCents)
     if (money !== null) return money
+  }
+
+  if (type === 'percent' && fn && MONETARY.has(fn)) {
+    const n = typeof value === 'number' ? value : Number(value)
+    if (Number.isFinite(n)) return `${(n * 100).toLocaleString(undefined, { maximumFractionDigits: 2 })}%`
   }
 
   if (typeof value === 'number' && !Number.isInteger(value)) {

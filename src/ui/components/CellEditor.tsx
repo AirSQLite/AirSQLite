@@ -32,7 +32,13 @@ function chipStyle(column: ColumnDescriptor, value: string): { background?: stri
 
 export function CellEditor({ column, value, onCommit, onCancel }: CellEditorProps) {
   const type = column.displayType ?? 'text'
-  const [draft, setDraft] = useState(formatValue(value))
+  const [draft, setDraft] = useState(() => {
+    if (type === 'percent' && value !== null && value !== undefined && value !== '') {
+      const n = typeof value === 'number' ? value : Number(value)
+      if (Number.isFinite(n)) return String(n * 100)
+    }
+    return formatValue(value)
+  })
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(null)
   /**
    * Set as soon as this editor is finished, either way.
@@ -54,11 +60,12 @@ export function CellEditor({ column, value, onCommit, onCancel }: CellEditorProp
     if (settled.current) return
     settled.current = true
     // Empty string, never null — see the note at the top of this file.
-    if (type === 'number' || type === 'currency') {
+    if (type === 'number' || type === 'currency' || type === 'percent') {
       const trimmed = draft.trim()
       if (trimmed === '') return onCommit('')
       const parsed = Number(trimmed)
-      return onCommit(Number.isFinite(parsed) ? parsed : trimmed)
+      if (!Number.isFinite(parsed)) return onCommit(trimmed)
+      return onCommit(type === 'percent' ? parsed / 100 : parsed)
     }
     onCommit(draft)
   }
@@ -141,7 +148,7 @@ export function CellEditor({ column, value, onCommit, onCancel }: CellEditorProp
       ref={inputRef as never}
       class="afs-editor"
       data-testid="editor-input"
-      type={type === 'number' || type === 'currency' ? 'number' : type === 'date' ? 'date' : 'text'}
+      type={type === 'number' || type === 'currency' || type === 'percent' ? 'number' : type === 'date' ? 'date' : 'text'}
       value={type === 'date' ? draft.slice(0, 10) : draft}
       onInput={(event) => setDraft((event.currentTarget as HTMLInputElement).value)}
       onBlur={commitOnBlur}

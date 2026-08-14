@@ -1,4 +1,5 @@
 import type { ColumnDescriptor, DisplayType, SqlValue } from '../../shared/protocol.js'
+import { menuIcon } from './FieldTypeIcons.js'
 import { parseOptions, type ChoiceOptions } from '../state/choices.js'
 
 // Read-only rendering for each of the eleven display types.
@@ -16,17 +17,24 @@ import { parseOptions, type ChoiceOptions } from '../state/choices.js'
  * A value that is not a number is passed through untouched rather than shown as $NaN: the
  * display type is a user's assertion about a column, and it can be wrong about a given row.
  */
-const USD = new Intl.NumberFormat('en-US', {
+const USD_CENTS = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD',
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
 })
 
-export function formatCurrency(value: SqlValue | undefined): string | null {
+const USD_NO_CENTS = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 0,
+})
+
+export function formatCurrency(value: SqlValue | undefined, showCents = true): string | null {
   if (value === null || value === undefined || value === '') return ''
   const n = typeof value === 'number' ? value : Number(value)
-  return Number.isFinite(n) ? USD.format(n) : null
+  return Number.isFinite(n) ? (showCents ? USD_CENTS : USD_NO_CENTS).format(n) : null
 }
 
 export function formatValue(value: SqlValue | undefined): string {
@@ -141,7 +149,8 @@ export function CellValue({ column, value, onToggle, readOnly }: CellValueProps)
   }
 
   if (type === 'currency') {
-    const money = formatCurrency(value)
+    const showCents = (column.options?.showCents as boolean) ?? true
+    const money = formatCurrency(value, showCents)
     return <span data-testid="cell-currency">{money === null ? text : money}</span>
   }
 
@@ -149,7 +158,8 @@ export function CellValue({ column, value, onToggle, readOnly }: CellValueProps)
     if (value === null || value === undefined || value === '') return <span />
     const n = typeof value === 'number' ? value : Number(value)
     if (!Number.isFinite(n)) return <span>{text}</span>
-    return <span data-testid="cell-percent">{n.toLocaleString(undefined, { maximumFractionDigits: 2 })}%</span>
+    const decimals = (column.options?.decimals as number) ?? 2
+    return <span data-testid="cell-percent">{(n * 100).toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}%</span>
   }
 
   if (type === 'duration') {
@@ -171,7 +181,8 @@ export function CellValue({ column, value, onToggle, readOnly }: CellValueProps)
               event.stopPropagation()
               if (!readOnly) onToggle?.(i + 1 === filled ? 0 : i + 1)
             }}
-          >★</span>
+            dangerouslySetInnerHTML={{ __html: menuIcon('rating', { size: 14 }) }}
+          />
         ))}
       </span>
     )
@@ -192,6 +203,16 @@ export function CellValue({ column, value, onToggle, readOnly }: CellValueProps)
       return <span data-testid="cell-date">{d.toLocaleDateString(undefined, opts)}</span>
     }
     return <span>{text}</span>
+  }
+
+  if (type === 'number') {
+    const decimals = column.options?.decimals as number | undefined
+    if (decimals !== undefined && value !== null && value !== undefined && value !== '') {
+      const n = typeof value === 'number' ? value : Number(value)
+      if (Number.isFinite(n)) {
+        return <span>{n.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}</span>
+      }
+    }
   }
 
   const href = linkHref(type, text)
@@ -224,7 +245,7 @@ export function CellValue({ column, value, onToggle, readOnly }: CellValueProps)
             void navigator.clipboard?.writeText(text)
           }}
         >
-          ⧉
+          <span dangerouslySetInnerHTML={{ __html: menuIcon('copy_clipboard', { size: 12 }) }} />
         </button>
       </span>
     )

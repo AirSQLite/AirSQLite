@@ -55,9 +55,9 @@ Every column has a display type that controls how it renders, edits, filters, an
 |------|-------------|
 | **Text** | Single-line plain text. The default when nothing else matches. |
 | **Long text** | Multi-line text. Editor is a textarea; Enter inserts a newline, Cmd/Ctrl+Enter commits. Inferred when the longest value exceeds 120 characters or any value contains a newline. |
-| **Number** | Numeric value, right-aligned. Inferred for INTEGER, REAL, and NUMERIC columns (when not all-boolean). |
-| **Currency** | Formatted as USD (`$1,234.56`). Never inferred — must be set manually. |
-| **Percent** | Displays the value with a `%` suffix. Never inferred. |
+| **Number** | Numeric value, right-aligned. Configurable decimal places (Auto, 0–5) from the column header menu. Inferred for INTEGER, REAL, and NUMERIC columns (when not all-boolean). |
+| **Currency** | Formatted as USD (`$1,234.56`). Show or hide cents from the column header menu. Never inferred — must be set manually. |
+| **Percent** | Stores the raw fraction, displays ×100 with a `%` suffix (e.g. `0.42` → `42%`). Configurable decimal places (Auto, 0–5). Never inferred. |
 | **Duration** | Stores total seconds, displays as `H:MM:SS` or `M:SS`. Never inferred. |
 | **Rating** | Row of clickable stars (1–10, default 5). Click a star to set, click the last filled star to clear. Configurable max via the column header menu. Never inferred. |
 | **Checkbox** | A checkbox that commits on click. Stores 0/1 in an INTEGER column. Inferred when every sampled value is 0 or 1. |
@@ -72,6 +72,14 @@ Every column has a display type that controls how it renders, edits, filters, an
 ### Inference
 
 When a column has no stored display type, AirSQLite samples up to 200 rows and applies heuristics — every sampled value must agree for a type to be inferred. For example, one non-email in a column of emails drops it back to plain text. Inferred types are marked "— guessed" in the column header menu and are never written to the database. Setting a type explicitly always overrides inference.
+
+### Computed fields
+
+Computed fields are formula columns defined by a SQL expression. They're designed to be authored by your coding agent — describe the column you want and the agent writes the formula. The result is evaluated at query time, so it stays current as data changes. Computed fields are read-only in the grid and detail panel, filterable, sortable, and summarizable. The formula is visible from the column header menu.
+
+### Column rename
+
+Rename any column from its header menu. The rename cascades to all saved views — sort, filter, grouping, column order, widths, visibility, and summaries all update automatically.
 
 ### Linked records
 
@@ -123,9 +131,11 @@ Search is transient and is not part of a saved view. It answers a question you h
 
 ## Grouping
 
-Group rows by one or more columns. Check columns in the group menu — the check order determines nesting (first checked = outermost group). Each group shows a header with the value and row count.
+Group rows by one or more columns. Check columns in the group menu, then drag to reorder — the top-to-bottom order determines nesting (first = outermost group). Each group header shows the value, row count, and inline summary aggregates matching your summary bar functions.
 
-Groups are collapsible — click the chevron to collapse, or use "Collapse all" / "Expand all" in the group menu. Collapse state is session-only and not saved with the view, since which groups happen to be open is a scroll position, not an arrangement.
+Each grouping column has an ascending/descending toggle, saved with the view. Groups are collapsible — click the chevron to collapse, or use "Collapse all" / "Expand all" in the group menu. Collapse state persists across reloads but is not saved with the view, since which groups happen to be open is a scroll position, not an arrangement.
+
+Group headers format values by display type — checkboxes show "Checked" / "Unchecked", currencies and percents format as you'd expect, and dates use your date format.
 
 Grouping columns sort ahead of your own sort order to keep each group as a contiguous block of rows.
 
@@ -137,7 +147,7 @@ The backend is the only layer that touches SQLite or the filesystem. The UI is a
 
 **The audit trail** appends one NDJSON line per write to a sidecar file next to your database, recording only the fields that changed. This powers the History tab and the `__created`/`__modified` virtual columns.
 
-**Live reload** watches the database's directory (not the file — WAL mode writes to `-wal`) and uses `PRAGMA data_version` to distinguish external writes from your own. When an external write lands, changed cells flash, added rows highlight, and if it lands on the cell you're editing, your draft survives with a badge showing the value that moved underneath.
+**Live reload** watches the database's directory (not the file — WAL mode writes to `-wal`) and uses `PRAGMA data_version` to distinguish external writes from your own. When an external write lands, changed cells flash, added rows highlight, and new columns appear automatically. If an external write lands on the cell you're editing, your draft survives with a badge showing the value that moved underneath.
 
 ## Actions
 

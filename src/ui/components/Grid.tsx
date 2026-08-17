@@ -24,7 +24,7 @@ import {
 } from '../state/selection.js'
 import type { Links } from '../state/links.js'
 import { changeKey, type TableData } from '../state/store.js'
-import type { LaidOutColumn } from '../state/views.js'
+import { DEFAULT_COLUMN_WIDTH, type LaidOutColumn } from '../state/views.js'
 import { ActionButtons } from './ActionButtons.js'
 import { CellEditor } from './CellEditor.js'
 import { CellValue, formatCurrency, formatValue, isTruthy } from './CellValue.js'
@@ -289,6 +289,19 @@ export function Grid({
     frozenCount,
     chromeCount,
   } = toRenderColumns(layout, editable, frozenDataColumns, rowActions.length, canConfigure)
+
+  const prevDataColumns = useRef<Set<string> | null>(null)
+  useEffect(() => {
+    const dataColumns = columns.filter((c) => c.kind === 'data')
+    const currentKeys = new Set(dataColumns.map((c) => c.key))
+    const prev = prevDataColumns.current
+    prevDataColumns.current = currentKeys
+    const added = prev
+      ? dataColumns.filter((c) => !prev.has(c.key))
+      : dataColumns.filter((c) => c.width === DEFAULT_COLUMN_WIDTH)
+    if (added.length === 0) return
+    requestAnimationFrame(() => { for (const col of added) autoFit(col) })
+  }, [columns])
 
   useLayoutEffect(() => {
     const element = scroller.current
@@ -846,7 +859,6 @@ export function Grid({
                   onInsert={(side) => onAddColumn({ column: column.key, side })}
                   onSetDisplayType={(type, options) => {
                     onSetDisplayType(column.key, type, options)
-                    setMenuColumn(null)
                   }}
                   frozen={index < frozenCount}
                   onHide={() => {
@@ -907,6 +919,8 @@ export function Grid({
                   grouping={grouping}
                   summaryConfig={summaryConfig}
                   leadingWidth={chromeWidth(editable)}
+                  frozenCount={frozenCount}
+                  frozenOffsets={frozenOffsets}
                   onToggle={onToggleGroup}
                 />
               )
@@ -1339,6 +1353,8 @@ function GroupHeader({
   grouping,
   summaryConfig,
   leadingWidth,
+  frozenCount,
+  frozenOffsets,
   onToggle,
 }: {
   node: GroupNode
@@ -1348,6 +1364,8 @@ function GroupHeader({
   grouping: string[]
   summaryConfig: Record<string, SummaryFunction>
   leadingWidth: number
+  frozenCount: number
+  frozenOffsets: number[]
   onToggle: (values: SqlValue[]) => void
 }) {
   const groupColumn = grouping[node.depth]
@@ -1355,13 +1373,25 @@ function GroupHeader({
   const value = node.values[node.values.length - 1]
   const label = formatGroupValue(value, descriptor)
 
+  const chromeCount = leadingWidth > 0 ? 1 : 0
+  const frozenDataCount = frozenCount - chromeCount
+
+  let frozenZoneWidth = leadingWidth
+  for (let i = 0; i < frozenDataCount && i < columns.length; i++) {
+    frozenZoneWidth += columns[i]!.width
+  }
+
   let colOffset = leadingWidth
-  const cellPositions: Array<{ name: string; left: number; width: number; displayType?: DisplayType; options?: Record<string, unknown> | null }> = []
-  for (const { descriptor: colDesc, width } of columns) {
+  const cellPositions: Array<{
+    name: string; left: number; width: number; colIndex: number
+    displayType?: DisplayType; options?: Record<string, unknown> | null
+  }> = []
+  for (let i = 0; i < columns.length; i++) {
+    const { descriptor: colDesc, width } = columns[i]!
     const fn = summaryConfig[colDesc.name] as SummaryFunction | undefined
     const val = node.summary?.[colDesc.name]
     if (fn && val !== null && val !== undefined) {
-      cellPositions.push({ name: colDesc.name, left: colOffset, width, displayType: colDesc.displayType, options: colDesc.options })
+      cellPositions.push({ name: colDesc.name, left: colOffset, width, colIndex: i, displayType: colDesc.displayType, options: colDesc.options })
     }
     colOffset += width
   }
@@ -1373,7 +1403,14 @@ function GroupHeader({
       data-testid="group-header"
       data-group-depth={node.depth}
       data-group-value={label.text}
+      style={{ minWidth: `${colOffset}px` }}
     >
+      {frozenCount > 0 ? (
+        <span
+          class="afs-group__freeze-mask"
+          style={{ width: `${frozenZoneWidth}px`, marginRight: `${-frozenZoneWidth}px` }}
+        />
+      ) : null}
       <button
         type="button"
         class="afs-group__toggle"
@@ -1396,11 +1433,24 @@ function GroupHeader({
       {cellPositions.map((cell) => {
         const fn = summaryConfig[cell.name]!
         const val = node.summary![cell.name]
+        const renderIndex = leadingWidth > 0 ? cell.colIndex + 1 : cell.colIndex
+        const frozen = renderIndex < frozenCount
+        const style: Record<string, string> = {
+          width: `${cell.width}px`,
+        }
+        if (frozen) {
+          style['position'] = 'sticky'
+          style['left'] = `${frozenOffsets[renderIndex] ?? 0}px`
+          style['zIndex'] = '2'
+        } else {
+          style['position'] = 'absolute'
+          style['left'] = `${cell.left}px`
+        }
         return (
           <span
             key={cell.name}
-            class="afs-group__cell"
-            style={{ position: 'absolute', left: `${cell.left}px`, width: `${cell.width}px` }}
+            class={`afs-group__cell${frozen ? ' afs-group__cell--frozen' : ''}`}
+            style={style}
             data-testid={`group-summary-${cell.name}`}
           >
             <span class="afs-group__summary-label">{SUMMARY_LABELS[fn] ?? fn}</span>

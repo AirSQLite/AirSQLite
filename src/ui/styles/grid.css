@@ -259,11 +259,18 @@
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  flex: 1 1 auto;
   color: var(--afs-muted);
   padding: 2rem;
   text-align: center;
+  position: absolute;
+  top: var(--afs-header-height, 30px);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 1;
 }
+.afs-empty > * { pointer-events: auto; }
 
 
 /* --- buttons -------------------------------------------------------------- */
@@ -823,6 +830,7 @@
 }
 .afs-col-picker__item:hover { background: var(--afs-hover-strong); }
 .afs-col-picker__item--active { color: var(--afs-accent); font-weight: 600; }
+.afs-col-picker__item:focus { background: var(--afs-hover-strong); outline: none; }
 
 .afs-views__input,
 .afs-search__input {
@@ -947,8 +955,8 @@
 
 .afs-freeze-bar {
   position: absolute;
-  top: 0;
-  height: 100%;
+  top: var(--afs-header-height);
+  height: calc(100% - var(--afs-header-height));
   width: 8px;
   margin-left: -4px;
   cursor: ew-resize;
@@ -995,15 +1003,18 @@
 
 .afs-group__toggle {
   /* Sticky-left: the label is what tells you which group you are inside, and losing it when
-     you scroll right defeats the point of having it. */
+     you scroll right defeats the point of having it. Opaque base + tint so scrolled-under
+     summary values cannot bleed through — same pattern as frozen data cells. */
   position: sticky;
   left: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 0.4rem;
   padding-right: 0.6rem;
   border: none;
-  background: none;
+  background: var(--afs-bg);
+  background-image: linear-gradient(var(--afs-band), var(--afs-band));
   color: var(--afs-fg);
   font: inherit;
   cursor: pointer;
@@ -1040,6 +1051,21 @@
   flex: 0 0 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--afs-muted); font-size: 0.85em; padding: 0 0.5rem;
   display: inline-flex; align-items: center;
+  box-sizing: border-box;
+}
+.afs-group__cell--frozen {
+  background: var(--afs-bg);
+  background-image: linear-gradient(var(--afs-band), var(--afs-band));
+}
+.afs-group__freeze-mask {
+  position: sticky;
+  left: 0;
+  flex: 0 0 auto;
+  height: 100%;
+  z-index: 1;
+  background: var(--afs-bg);
+  background-image: linear-gradient(var(--afs-band), var(--afs-band));
+  pointer-events: none;
 }
 .afs-group__summary-label {
   opacity: 0.7; margin-right: 0.25rem;

@@ -8,6 +8,7 @@ import type {
   SqlValue,
 } from '../../shared/protocol.js'
 import { ColumnPicker, menuIcon } from './FieldTypeIcons.js'
+import { parseOptions } from '../state/choices.js'
 
 // A filter builder with no SQL in it anywhere.
 //
@@ -409,9 +410,7 @@ function ValueInput({
     )
   }
 
-  const choices = Array.isArray(descriptor?.options?.['choices'])
-    ? (descriptor.options['choices'] as unknown[]).map((c) => String(c))
-    : []
+  const choices = parseOptions(descriptor?.options).choices.map((c) => c.value)
 
   if (choices.length > 0) {
     return (

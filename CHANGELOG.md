@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-08-17
+
+### Added
+- **Config snapshot sidecar** — AirSQLite now writes an `airsqlite.snapshot.ndjson` file inside the sidecar folder (`<db>.airsqlite/`) that captures the full state of all `_airsqlite_*` configuration tables. Because it is a text file, changes to views, computed columns, display types, and primary fields surface as readable diffs in git and VS Code Source Control — solving the problem where configuration stored inside a binary `.db` file was invisible to version control.
+- **Config restore from snapshot** — on session open, if the snapshot has views, computed columns, or display types that the database is missing (e.g. after pulling a repo onto a new machine), they are automatically restored into the `_airsqlite_*` tables. Natural keys are used for matching so config survives across machines where row IDs differ.
+- **Type-to-jump in column pickers** — typing in sort and filter column dropdowns jumps to the first matching column name, like a native `<select>`
+
+### Changed
+- Collapse All in the group menu now collapses data rows while keeping all group headers visible at every nesting level
+- Column header menu stays open when editing select options (sorting, reordering, changing colors, renaming, adding, or removing)
+- Creating a new view skips the naming prompt and auto-names to "new view", "new view 2", etc.
+- New tables and new views initialize column widths to fit the full header text instead of a fixed 160px
+
+### Fixed
+- Git-tracked databases no longer report "database disk image is malformed" when opened on another machine. The extension uses WAL mode for live-reload support, but previously left the WAL flag in the database header on close — so the `.db` file required companion `-wal`/`-shm` files that don't travel through git. The database is now checkpointed on close, making the `.db` self-contained at rest.
+- Group summary values no longer scroll on top of frozen columns — frozen zone uses an opaque mask matching the pattern established for data row cells
+- Column freeze drag line no longer appears in the header row, where it competed with column resize handles
+- New columns arriving via live reload auto-size to fit their header label instead of defaulting to 160px
+- Group header background extends to the right edge of the last column when scrolled horizontally
+- Converting a computed field to single/multi-select now populates the option and color list from existing values
+- Grouping by a computed column now shows the correct group values instead of "(empty)"
+- "No records" message renders inside the grid area instead of below the horizontal scrollbar
+- Single/multi-select values in the filter menu no longer display as `[object Object]`
+- Sorted rows no longer appear in the wrong order across nested groups when chunks arrive out of sequence
+
 ## [0.1.5] - 2026-08-14
 
 ### Added
@@ -74,7 +99,8 @@ Initial public release.
 - Configuration stored in `_airsqlite_*` tables inside the database (views travel with the file)
 - Read-only mode with graceful degradation when the file is not writable
 
-[Unreleased]: https://github.com/AirSQLite/AirSQLite/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/AirSQLite/AirSQLite/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/AirSQLite/AirSQLite/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/AirSQLite/AirSQLite/compare/v0.1.3...v0.1.5
 [0.1.3]: https://github.com/AirSQLite/AirSQLite/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/AirSQLite/AirSQLite/compare/v0.1.1...v0.1.2

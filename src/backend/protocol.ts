@@ -63,10 +63,14 @@ export function createSession(ctx: HandlerContext): Session {
   const schema = new Schema(db)
 
   const changelog = Changelog.open(ctx.dbPath, ctx.now ? { now: ctx.now } : {})
-  if (!ctx.readonly) changelog.reconcile(db.connection)
+  if (!ctx.readonly) {
+    changelog.reconcile(db.connection)
+    changelog.reconcileConfig(db.connection)
+  }
   db.changelog = (op, table, rowid, before, after) =>
     changelog.append(op, table, rowid, before, after)
   db.stampResolver = (table, rowid) => changelog.stamps(table, rowid)
+  meta.onConfigChange = () => changelog.writeConfigSnapshot(db.connection)
 
   const actions = new Actions(db, ctx.host ?? {})
 
@@ -187,8 +191,10 @@ export function createSession(ctx: HandlerContext): Session {
         return db.bulkUpdate(request.table, request.rowids, request.field, request.value)
 
       // --- metadata -------------------------------------------------------
-      case 'distinct-values':
-        return db.distinctValues(request.table, request.column, request.limit)
+      case 'distinct-values': {
+        const computed = validComputed(meta, request.table).find((c) => c.name === request.column)
+        return db.distinctValues(request.table, request.column, request.limit, computed?.formula)
+      }
 
       case 'dependents':
         return schema.dependents(request.table, request.column)
@@ -332,6 +338,7 @@ export function createSession(ctx: HandlerContext): Session {
       watcher?.close()
       listeners.clear()
       if (!ctx.readonly) {
+        changelog.writeConfigSnapshot(db.connection)
         changelog.writeAllSnapshots(
           db.connection,
           db.tables().map((t) => t.name),

@@ -57,6 +57,42 @@ function parseLines(text: string): ChangelogLine[] {
   return lines
 }
 
+/** The four config tables, in snapshot output order. */
+const META_TABLES = [
+  '_airsqlite_tables',
+  '_airsqlite_columns',
+  '_airsqlite_views',
+  '_airsqlite_actions',
+] as const
+
+/** Sort key for deterministic snapshot ordering within each meta table. */
+const META_ORDER: Record<string, string> = {
+  _airsqlite_tables: 'table_name',
+  _airsqlite_columns: 'table_name, column_name',
+  _airsqlite_views: 'id',
+  _airsqlite_actions: 'id',
+}
+
+/** Fields stripped from the config snapshot because they are UI state, not config. */
+const SNAPSHOT_STRIP: Record<string, Set<string>> = {
+  _airsqlite_tables: new Set(['last_view_id']),
+}
+
+/** Natural key columns per meta table, for cross-machine matching.
+ *  Views use (table_name, name) rather than id — auto-increment IDs differ across machines. */
+const META_KEY_COLS: Record<string, string[]> = {
+  _airsqlite_tables: ['table_name'],
+  _airsqlite_columns: ['table_name', 'column_name'],
+  _airsqlite_views: ['table_name', 'name'],
+  _airsqlite_actions: ['table_name', 'label'],
+}
+
+/** Build a string key for a config row using its natural primary key. */
+function configKey(table: string, row: Record<string, SqlValue>): string {
+  const cols = META_KEY_COLS[table] ?? ['rowid']
+  return cols.map((c) => String(row[c] ?? '')).join('\0')
+}
+
 export class Changelog {
   /** The sidecar folder path (`mydb.airsqlite/`). */
   readonly dir: string
@@ -93,6 +129,16 @@ export class Changelog {
   /** The snapshot file for one table inside the sidecar folder. */
   static snapshotFor(sidecarDir: string, table: string): string {
     return path.join(sidecarDir, `${table}.snapshot.ndjson`)
+  }
+
+  /** The config changelog — all `_airsqlite_*` mutations in one file. */
+  static configChangelogFor(sidecarDir: string): string {
+    return path.join(sidecarDir, 'airsqlite.changelog.ndjson')
+  }
+
+  /** The config snapshot — full state of all `_airsqlite_*` tables. */
+  static configSnapshotFor(sidecarDir: string): string {
+    return path.join(sidecarDir, 'airsqlite.snapshot.ndjson')
   }
 
   // -- Legacy paths (pre-folder consolidated format) --------------------------
@@ -507,6 +553,228 @@ export class Changelog {
     if (!this.writable) return
     for (const table of this.snapshotTables()) {
       this.reconcileTable(table, conn)
+    }
+  }
+
+  // -- Config tracking -------------------------------------------------------
+
+  /**
+   * Record a config mutation — a write to one of the `_airsqlite_*` tables.
+   *
+   * Entries go to `airsqlite.changelog.ndjson`. Unlike data changelogs, these carry
+   * the meta table name in `table` so a single file tracks all four config tables.
+   */
+  appendConfigChange(
+    op: ChangeOp,
+    metaTable: string,
+    row: number,
+    before: Record<string, SqlValue>,
+    after: Record<string, SqlValue>,
+  ): void {
+    if (!this.writable) return
+    try {
+      if (!this.#ensureFolder()) return
+      const entry: ChangeEntry = { ts: this.#now(), op, table: metaTable, row, before, after }
+      this.#writeToFile(Changelog.configChangelogFor(this.dir), entry)
+    } catch {
+      // Best effort — a failed config entry must not break the save.
+    }
+  }
+
+  /**
+   * Overwrite the config snapshot with the current state of all `_airsqlite_*` tables.
+   *
+   * The snapshot is the file git diffs against — one JSON line per config row, tagged with
+   * `_table` and sorted deterministically so identical config produces identical output.
+   * UI-only fields (`last_view_id`) are stripped to avoid noise on every tab switch.
+   */
+  writeConfigSnapshot(conn: BetterSqlite3.Database): void {
+    if (!this.writable) return
+    if (!this.#ensureFolder()) return
+
+    const out: string[] = []
+    for (const table of META_TABLES) {
+      const order = META_ORDER[table] ?? 'rowid'
+      const strip = SNAPSHOT_STRIP[table]
+      let rows: Array<Record<string, SqlValue>>
+      try {
+        rows = conn.prepare(`SELECT * FROM "${table}" ORDER BY ${order}`).all() as Array<
+          Record<string, SqlValue>
+        >
+      } catch {
+        continue
+      }
+      for (const row of rows) {
+        if (strip) for (const k of strip) delete row[k]
+        out.push(JSON.stringify({ _table: table, ...row }))
+      }
+    }
+
+    try {
+      fs.writeFileSync(
+        Changelog.configSnapshotFor(this.dir),
+        out.join('\n') + (out.length ? '\n' : ''),
+        'utf8',
+      )
+    } catch {
+      // Failing to snapshot must not break the session.
+    }
+  }
+
+  /**
+   * Restore config from the snapshot into the database.
+   *
+   * The snapshot is the portable config record — it travels via git while the binary `.db`
+   * may be stale. On session open this method diffs the snapshot against the current
+   * `_airsqlite_*` tables and applies missing or changed rows. Natural primary keys are
+   * used for matching so config survives across machines where rowids may differ.
+   *
+   * Rows in the snapshot but not in the DB are inserted. Rows that differ are updated to
+   * match the snapshot. Rows in the DB but not in the snapshot are left alone — they may
+   * be local work not yet snapshotted.
+   */
+  reconcileConfig(conn: BetterSqlite3.Database): void {
+    if (!this.writable) return
+    const snapshotPath = Changelog.configSnapshotFor(this.dir)
+    if (!fs.existsSync(snapshotPath)) return
+
+    let text: string
+    try {
+      text = fs.readFileSync(snapshotPath, 'utf8')
+    } catch {
+      return
+    }
+
+    // Parse snapshot into per-meta-table groups keyed by natural key.
+    const snapshot = new Map<string, Map<string, Record<string, SqlValue>>>()
+    for (const raw of text.split('\n')) {
+      if (raw.trim() === '') continue
+      try {
+        const parsed = JSON.parse(raw) as Record<string, SqlValue>
+        const table = parsed['_table'] as string
+        if (!table) continue
+        delete parsed['_table']
+
+        let tableMap = snapshot.get(table)
+        if (!tableMap) {
+          tableMap = new Map()
+          snapshot.set(table, tableMap)
+        }
+        tableMap.set(configKey(table, parsed), parsed)
+      } catch {
+        continue
+      }
+    }
+
+    const ts = this.#now()
+    for (const table of META_TABLES) {
+      const order = META_ORDER[table] ?? 'rowid'
+      const snapped = snapshot.get(table) ?? new Map<string, Record<string, SqlValue>>()
+      if (snapped.size === 0) continue
+
+      let currentRows: Array<Record<string, SqlValue>>
+      try {
+        currentRows = conn
+          .prepare(`SELECT * FROM "${table}" ORDER BY ${order}`)
+          .all() as Array<Record<string, SqlValue>>
+      } catch {
+        continue
+      }
+
+      const currentByKey = new Map<string, Record<string, SqlValue>>()
+      for (const row of currentRows) {
+        currentByKey.set(configKey(table, row), row)
+      }
+
+      // Rows in snapshot but not in DB → INSERT.
+      for (const [nk, snappedRow] of snapped) {
+        const current = currentByKey.get(nk)
+        if (!current) {
+          // Drop auto-increment id and timestamps — let the DB assign fresh ones.
+          const insertRow = { ...snappedRow }
+          if (table === '_airsqlite_views' || table === '_airsqlite_actions') {
+            delete insertRow['id']
+          }
+          delete insertRow['created_at']
+          delete insertRow['updated_at']
+
+          const cols = Object.keys(insertRow)
+          const placeholders = cols.map(() => '?').join(', ')
+          const quoted = cols.map((c) => `"${c}"`).join(', ')
+          try {
+            conn
+              .prepare(`INSERT INTO "${table}" (${quoted}) VALUES (${placeholders})`)
+              .run(...cols.map((c) => insertRow[c]))
+            this.#appendConfigReconciliation({
+              ts,
+              op: 'insert',
+              table,
+              row: 0,
+              before: {},
+              after: insertRow,
+              source: 'reconcile',
+            })
+          } catch {
+            // Conflict or schema mismatch — skip this row.
+          }
+          continue
+        }
+
+        // Both exist — check for differences.
+        // Skip key columns, auto-increment ids, and timestamps when comparing.
+        const skipCols = new Set(META_KEY_COLS[table] ?? [])
+        if (table === '_airsqlite_views' || table === '_airsqlite_actions') skipCols.add('id')
+        skipCols.add('created_at')
+        skipCols.add('updated_at')
+
+        const sets: string[] = []
+        const vals: SqlValue[] = []
+        const before: Record<string, SqlValue> = {}
+        const after: Record<string, SqlValue> = {}
+        for (const k of Object.keys(snappedRow)) {
+          if (skipCols.has(k)) continue
+          const snappedVal = snappedRow[k] ?? null
+          const currentVal = current[k] ?? null
+          if (snappedVal !== currentVal) {
+            sets.push(`"${k}" = ?`)
+            vals.push(snappedVal)
+            before[k] = currentVal
+            after[k] = snappedVal
+          }
+        }
+        if (sets.length === 0) continue
+
+        const where = (META_KEY_COLS[table] ?? ['rowid'])
+          .map((c) => `"${c}" = ?`)
+          .join(' AND ')
+        const whereVals = (META_KEY_COLS[table] ?? ['rowid']).map((c) => current[c])
+
+        try {
+          conn
+            .prepare(`UPDATE "${table}" SET ${sets.join(', ')} WHERE ${where}`)
+            .run(...vals, ...whereVals)
+          this.#appendConfigReconciliation({
+            ts,
+            op: 'update',
+            table,
+            row: 0,
+            before,
+            after,
+            source: 'reconcile',
+          })
+        } catch {
+          // Schema mismatch — skip.
+        }
+      }
+    }
+  }
+
+  #appendConfigReconciliation(entry: ChangeEntry): void {
+    try {
+      if (!this.#ensureFolder()) return
+      this.#writeToFile(Changelog.configChangelogFor(this.dir), entry)
+    } catch {
+      // Best effort — don't break open.
     }
   }
 }

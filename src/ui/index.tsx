@@ -1172,7 +1172,6 @@ function App({ client, host }: { client: Client; host: HostServices }) {
           listOpen={showViews}
           onToggleList={() => setShowViews((prev) => !prev)}
           onSelect={views.selectView}
-          onCreate={views.create}
           onDuplicate={views.duplicate}
           onRename={views.rename}
           onDescribe={views.describe}

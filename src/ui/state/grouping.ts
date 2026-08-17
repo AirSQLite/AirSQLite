@@ -335,8 +335,8 @@ export function useGrouping(
     const ids: string[] = []
     const walk = (nodes: GroupNode[]): void => {
       for (const node of nodes) {
-        ids.push(groupKey(node.values))
-        walk(node.children)
+        if (node.children.length > 0) walk(node.children)
+        else ids.push(groupKey(node.values))
       }
     }
     walk(tree)

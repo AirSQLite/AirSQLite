@@ -115,6 +115,9 @@ export class Db {
   }
 
   close(): void {
+    if (!this.#conn.readonly) {
+      this.#conn.pragma('wal_checkpoint(TRUNCATE)')
+    }
     this.#conn.close()
   }
 
@@ -193,15 +196,16 @@ export class Db {
    * The cap is a guard, not a page: a column with 40,000 distinct values is not a select field,
    * and returning the first 200 of them makes that obvious faster than returning all of them.
    */
-  distinctValues(table: string, column: string, limit = 200): SqlValue[] {
+  distinctValues(table: string, column: string, limit = 200, expression?: string): SqlValue[] {
     this.#table(table)
-    if (!this.#columnNames(table).has(column)) {
+    if (!expression && !this.#columnNames(table).has(column)) {
       throw new ProtocolError(`There is no column named "${column}" in "${table}".`)
     }
+    const expr = expression ? `(${expression})` : quoteIdent(column)
     const rows = this.#conn
       .prepare(
-        `SELECT DISTINCT ${quoteIdent(column)} AS v FROM ${quoteIdent(table)}
-          WHERE ${quoteIdent(column)} IS NOT NULL AND ${quoteIdent(column)} != ''
+        `SELECT DISTINCT ${expr} AS v FROM ${quoteIdent(table)}
+          WHERE ${expr} IS NOT NULL AND ${expr} != ''
           ORDER BY 1 LIMIT ?`,
       )
       .all(Math.max(1, Math.min(limit, 1000))) as Array<{ v: SqlValue }>
@@ -625,6 +629,9 @@ export class Db {
       const expr = compExprs.get(c)
       return expr ? `(${expr})` : quoteIdent(c)
     })
+    const selected = columns.map((c, i) => {
+      return compExprs.has(c) ? `${quoted[i]} AS ${quoteIdent(c)}` : quoted[i]!
+    })
 
     const summaryEntries = Object.entries(request.summary ?? {})
     const summarySelections = summaryEntries.map(([col, fn]) => {
@@ -632,7 +639,7 @@ export class Db {
       const ref = expr ? `(${expr})` : quoteIdent(col)
       return `${aggregateSql(fn, ref)} AS ${quoteIdent('__s_' + col)}`
     })
-    const allSelections = [...quoted, 'COUNT(*) AS "__n"', ...summarySelections]
+    const allSelections = [...selected, 'COUNT(*) AS "__n"', ...summarySelections]
 
     try {
       const rows = this.#conn

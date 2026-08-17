@@ -228,11 +228,23 @@ export function ColumnPicker({ columns, value, testId, class: className, onChang
   const listRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const toggleRef = useRef<HTMLButtonElement>(null)
+  const bufferRef = useRef('')
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     if (!open) return
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false)
+      if (event.key === 'Escape') { setOpen(false); return }
+      if (event.key.length === 1 && !event.ctrlKey && !event.metaKey) {
+        bufferRef.current += event.key.toLowerCase()
+        if (timerRef.current) clearTimeout(timerRef.current)
+        timerRef.current = setTimeout(() => { bufferRef.current = '' }, 500)
+        const match = listRef.current?.querySelector<HTMLElement>(
+          `[data-col-name^="${CSS.escape(bufferRef.current)}"]`,
+        )
+        match?.scrollIntoView({ block: 'nearest' })
+        match?.focus()
+      }
     }
     const onDown = (event: MouseEvent) => {
       if (!containerRef.current?.contains(event.target as Node) &&
@@ -243,11 +255,13 @@ export function ColumnPicker({ columns, value, testId, class: className, onChang
     return () => {
       window.removeEventListener('keydown', onKey)
       document.removeEventListener('mousedown', onDown)
+      if (timerRef.current) clearTimeout(timerRef.current)
     }
   }, [open])
 
   const handleOpen = () => {
     if (open) { setOpen(false); return }
+    bufferRef.current = ''
     const rect = toggleRef.current?.getBoundingClientRect()
     if (rect) setPos({ left: rect.left, top: rect.bottom + 2 })
     setOpen(true)
@@ -276,6 +290,7 @@ export function ColumnPicker({ columns, value, testId, class: className, onChang
               key={col.name}
               type="button"
               class={`afs-col-picker__item${col.name === value ? ' afs-col-picker__item--active' : ''}`}
+              data-col-name={col.name.toLowerCase()}
               onClick={() => {
                 onChange(col.name)
                 setOpen(false)

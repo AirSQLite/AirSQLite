@@ -152,9 +152,12 @@ type StoredColumn = Partial<ColumnDisplay> & {
   description: string | null
 }
 
+export type ConfigSink = () => void
+
 export class Meta {
   #db: Db
   #available: boolean
+  onConfigChange: ConfigSink | null = null
 
   constructor(db: Db) {
     this.#db = db
@@ -390,6 +393,7 @@ export class Meta {
            ON CONFLICT(table_name) DO UPDATE SET primary_field = excluded.primary_field`,
       )
       .run(table, column)
+    this.onConfigChange?.()
   }
 
   // -------------------------------------------------------------------------
@@ -442,6 +446,7 @@ export class Meta {
          ON CONFLICT(table_name) DO UPDATE SET description = excluded.description`,
       )
       .run(table, this.primaryField(table), value)
+    this.onConfigChange?.()
   }
 
   /** Descriptions for every configured table, so the tab strip needs one round trip, not N. */
@@ -499,6 +504,7 @@ export class Meta {
           .run(name, guessPrimaryField(this.#db.columns(name)), index)
       })
     })()
+    this.onConfigChange?.()
   }
 
   // -------------------------------------------------------------------------
@@ -632,6 +638,7 @@ export class Meta {
          DO UPDATE SET display_type = excluded.display_type, options = excluded.options`,
       )
       .run(table, column, type, options ? JSON.stringify(options) : null)
+    this.onConfigChange?.()
   }
 
   /**
@@ -668,6 +675,7 @@ export class Meta {
          ON CONFLICT (table_name, column_name) DO UPDATE SET description = excluded.description`,
       )
       .run(table, column, value)
+    this.onConfigChange?.()
   }
 
   #sample(table: string, columns: ColumnInfo[]): Map<string, SqlValue[]> {
@@ -780,6 +788,7 @@ export class Meta {
           if (view.isDefault) this.#clearOtherDefaults(table, id)
           return id
         })()
+        this.onConfigChange?.()
         return this.#view(created)
       }
 
@@ -823,6 +832,7 @@ export class Meta {
         if (view.isDefault) this.#clearOtherDefaults(table, id)
       })()
 
+      this.onConfigChange?.()
       return this.#view(view.id)
     } catch (err) {
       throw mapSqliteError(err, { table })
@@ -854,6 +864,7 @@ export class Meta {
         .prepare('UPDATE _airsqlite_tables SET last_view_id = NULL WHERE last_view_id = ?')
         .run(viewId)
     })()
+    this.onConfigChange?.()
   }
 
   #view(id: number): SavedView {

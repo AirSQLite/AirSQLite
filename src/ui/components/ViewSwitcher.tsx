@@ -24,7 +24,6 @@ export interface ViewSwitcherProps {
   listOpen: boolean
   onToggleList: () => void
   onSelect: (id: number) => void
-  onCreate: (name: string) => void
   onDuplicate: (name: string) => void
   onRename: (id: number, name: string) => void
   onDescribe: (id: number, description: string | null) => void
@@ -35,13 +34,11 @@ export interface ViewSwitcherProps {
 
 /** Which single-line prompt is open, if any. All three reuse one input. */
 type Prompt =
-  | { kind: 'create' }
   | { kind: 'duplicate' }
   | { kind: 'rename'; id: number }
   | { kind: 'describe'; id: number }
 
 const PROMPTS: Record<Prompt['kind'], { placeholder: string; confirm: string; testid: string }> = {
-  create: { placeholder: 'View name', confirm: 'Create', testid: 'view-create' },
   duplicate: { placeholder: 'Name for the copy', confirm: 'Duplicate', testid: 'view-duplicate' },
   rename: { placeholder: 'Rename view', confirm: 'Rename', testid: 'view-rename-save' },
   describe: { placeholder: 'View description', confirm: 'Save', testid: 'view-describe-save' },
@@ -55,7 +52,6 @@ export function ViewSwitcher({
   listOpen,
   onToggleList,
   onSelect,
-  onCreate,
   onDuplicate,
   onRename,
   onDescribe,
@@ -106,8 +102,7 @@ export function ViewSwitcher({
     // Every prompt but `describe` names something, and a nameless view is not a thing.
     if (!trimmed && prompt.kind !== 'describe') return
 
-    if (prompt.kind === 'create') onCreate(trimmed)
-    else if (prompt.kind === 'duplicate') onDuplicate(trimmed)
+    if (prompt.kind === 'duplicate') onDuplicate(trimmed)
     else if (prompt.kind === 'rename') onRename(prompt.id, trimmed)
     else onDescribe(prompt.id, trimmed || null)
     close()
@@ -305,18 +300,15 @@ export function ViewsPanel({
   onSelect,
   onCreate,
 }: ViewsPanelProps) {
-  // The panel names a new view itself rather than borrowing the toolbar's prompt. Creating one
-  // is the thing you do *from the list*, and bouncing focus up to the toolbar to type the name
-  // would put the input somewhere the eye is not.
-  const [naming, setNaming] = useState(false)
-  const [name, setName] = useState('')
   const [filter, setFilter] = useState('')
 
-  const commit = () => {
-    const trimmed = name.trim()
-    if (trimmed) onCreate(trimmed)
-    setName('')
-    setNaming(false)
+  const autoName = () => {
+    const existing = new Set(views.map((v) => v.name.toLowerCase()))
+    if (!existing.has('new view')) return onCreate('new view')
+    for (let i = 2; ; i++) {
+      const candidate = `new view ${i}`
+      if (!existing.has(candidate)) return onCreate(candidate)
+    }
   }
 
   const needle = filter.trim().toLowerCase()
@@ -367,56 +359,14 @@ export function ViewsPanel({
       </div>
 
       {writable ? (
-        naming ? (
-          <div class="afs-views-panel__naming">
-            <input
-              class="afs-views__input"
-              data-testid="view-name"
-              autofocus
-              placeholder="View name"
-              value={name}
-              onInput={(event) => setName((event.currentTarget as HTMLInputElement).value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') commit()
-                else if (event.key === 'Escape') {
-                  setName('')
-                  setNaming(false)
-                }
-              }}
-            />
-            <button
-              type="button"
-              class="afs-button afs-button--primary"
-              data-testid="view-create"
-              disabled={!name.trim()}
-              onClick={commit}
-            >
-              Create
-            </button>
-            <button
-              type="button"
-              class="afs-button afs-views__cancel"
-              data-testid="view-name-cancel"
-              title="Cancel"
-              aria-label="Cancel"
-              onClick={() => {
-                setName('')
-                setNaming(false)
-              }}
-            >
-              <span dangerouslySetInnerHTML={{ __html: menuIcon('x', { size: 14 }) }} />
-            </button>
-          </div>
-        ) : (
-          <button
-            type="button"
-            class="afs-views-panel__new"
-            data-testid="view-new"
-            onClick={() => setNaming(true)}
-          >
-            <span dangerouslySetInnerHTML={{ __html: menuIcon('plus', { size: 14 }) }} /> Create new view
-          </button>
-        )
+        <button
+          type="button"
+          class="afs-views-panel__new"
+          data-testid="view-new"
+          onClick={autoName}
+        >
+          <span dangerouslySetInnerHTML={{ __html: menuIcon('plus', { size: 14 }) }} /> Create new view
+        </button>
       ) : null}
     </aside>
   )

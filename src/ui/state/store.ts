@@ -437,9 +437,11 @@ export function useTableData(
   // every cached chunk. Serialising the spec keeps the effect dependency stable across
   // renders that rebuild an equivalent object.
   const specKey = JSON.stringify(spec)
+  const activeSpec = useRef(specKey)
 
   // Rows are invalidated by a table switch, any change to the query, or an explicit refresh.
   useEffect(() => {
+    activeSpec.current = specKey
     chunks.current = new Map()
     inFlight.current = new Set()
     setRowCount(0)
@@ -477,9 +479,11 @@ export function useTableData(
       if (chunks.current.has(chunkIndex) || inFlight.current.has(chunkIndex)) return
 
       inFlight.current.add(chunkIndex)
+      const snapshot = specKey
       void client
         .query({ table, offset: chunkIndex * CHUNK_SIZE, limit: CHUNK_SIZE, ...spec })
         .then((result) => {
+          if (activeSpec.current !== snapshot) return
           chunks.current.set(chunkIndex, result.rows)
           rerender()
         })

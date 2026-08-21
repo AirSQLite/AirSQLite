@@ -53,15 +53,24 @@ export function isTruthy(value: SqlValue | undefined): boolean {
   return text !== '' && text !== '0' && text !== 'false' && text !== 'no'
 }
 
+const tagsCache = new Map<string, string[]>()
+const TAGS_CACHE_MAX = 2000
+
 export function parseTags(value: SqlValue | undefined): string[] {
   const text = formatValue(value).trim()
   if (!text) return []
+  const cached = tagsCache.get(text)
+  if (cached) return cached
+  let result: string[]
   try {
     const parsed: unknown = JSON.parse(text)
-    return Array.isArray(parsed) ? parsed.map((v) => String(v)) : [text]
+    result = Array.isArray(parsed) ? parsed.map((v) => String(v)) : [text]
   } catch {
-    return [text]
+    result = [text]
   }
+  if (tagsCache.size >= TAGS_CACHE_MAX) tagsCache.clear()
+  tagsCache.set(text, result)
+  return result
 }
 
 function formatDuration(totalSeconds: number): string {
@@ -80,14 +89,33 @@ function linkHref(type: DisplayType, text: string): string | null {
   return null
 }
 
-/**
- * The chip background for a value, or nothing when the column is not coloring its values or
- * the value is not one of the configured options.
- */
-function chipStyle(options: ChoiceOptions, value: string): { background?: string } {
-  if (!options.colored) return {}
-  const choice = options.choices.find((c) => c.value === value)
-  return choice ? { background: `var(--afs-choice-${choice.color})` } : {}
+const optionsCache = new WeakMap<Record<string, unknown>, ChoiceOptions>()
+const colorMapCache = new WeakMap<Record<string, unknown>, Map<string, string> | null>()
+
+function cachedOptions(raw: Record<string, unknown> | null | undefined): ChoiceOptions {
+  if (!raw) return parseOptions(raw)
+  let cached = optionsCache.get(raw)
+  if (!cached) { cached = parseOptions(raw); optionsCache.set(raw, cached) }
+  return cached
+}
+
+function colorMap(raw: Record<string, unknown> | null | undefined): Map<string, string> | null {
+  if (!raw) return null
+  let cached = colorMapCache.get(raw)
+  if (cached !== undefined) return cached
+  const opts = cachedOptions(raw)
+  if (!opts.colored || opts.choices.length === 0) { colorMapCache.set(raw, null); return null }
+  const m = new Map<string, string>()
+  for (const c of opts.choices) m.set(c.value, c.color)
+  colorMapCache.set(raw, m)
+  return m
+}
+
+function chipStyle(raw: Record<string, unknown> | null | undefined, value: string): { background?: string } {
+  const m = colorMap(raw)
+  if (!m) return {}
+  const color = m.get(value)
+  return color ? { background: `var(--afs-choice-${color})` } : {}
 }
 
 export interface CellValueProps {
@@ -96,9 +124,11 @@ export interface CellValueProps {
   /** Toggle types commit immediately rather than opening an editor. */
   onToggle?: (next: number) => void
   readOnly?: boolean
+  /** Cap the number of chips rendered in multi_select cells. */
+  maxChips?: number
 }
 
-export function CellValue({ column, value, onToggle, readOnly }: CellValueProps) {
+export function CellValue({ column, value, onToggle, readOnly, maxChips }: CellValueProps) {
   const type = column.displayType ?? 'text'
   const text = formatValue(value)
 
@@ -127,14 +157,18 @@ export function CellValue({ column, value, onToggle, readOnly }: CellValueProps)
   if (type === 'multi_select') {
     const tags = parseTags(value)
     if (tags.length === 0) return <span />
-    const options = parseOptions(column.options)
+    const cap = maxChips ?? tags.length
+    const shown = tags.length > cap ? tags.slice(0, cap) : tags
     return (
       <span class="afs-tags" data-testid="cell-tags">
-        {tags.map((tag) => (
-          <span key={tag} class="afs-tag" style={chipStyle(options, tag)}>
+        {shown.map((tag) => (
+          <span key={tag} class="afs-tag" style={chipStyle(column.options, tag)}>
             {tag}
           </span>
         ))}
+        {tags.length > cap ? (
+          <span class="afs-tag afs-tag--more">+{tags.length - cap}</span>
+        ) : null}
       </span>
     )
   }
@@ -142,7 +176,7 @@ export function CellValue({ column, value, onToggle, readOnly }: CellValueProps)
   if (type === 'single_select') {
     if (!text) return <span />
     return (
-      <span class="afs-tag" data-testid="cell-select" style={chipStyle(parseOptions(column.options), text)}>
+      <span class="afs-tag" data-testid="cell-select" style={chipStyle(column.options, text)}>
         {text}
       </span>
     )

@@ -53,6 +53,7 @@ export interface ViewsApi {
   describe: (id: number, description: string | null) => void
   /** Make this the view that opens with the table. Clears the flag on the others. */
   setDefault: (id: number) => void
+  reorder: (ids: number[]) => void
   remove: (id: number) => void
 }
 
@@ -388,6 +389,21 @@ export function useViews(client: Client, table: string | null, writable: boolean
     [client, table, activeViewId],
   )
 
+  const reorder = useCallback(
+    (ids: number[]) => {
+      if (!table) return
+      setViews((prev) => {
+        const byId = new Map(prev.map((v) => [v.id, v]))
+        return ids.map((id) => byId.get(id)!).filter(Boolean)
+      })
+      void client
+        .reorderViews(table, ids)
+        .then((loaded) => setViews(loaded))
+        .catch((err: Error) => setError(err.message))
+    },
+    [client, table],
+  )
+
   const active = views.find((v) => v.id === activeViewId) ?? null
 
   return {
@@ -404,6 +420,7 @@ export function useViews(client: Client, table: string | null, writable: boolean
     rename,
     describe,
     setDefault,
+    reorder,
     remove,
   }
 }

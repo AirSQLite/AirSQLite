@@ -19,7 +19,10 @@ export function useDismissOnOutside<T extends HTMLElement = HTMLSpanElement>(
   useEffect(() => {
     if (!open) return
     const onDown = (event: MouseEvent) => {
-      if (!container.current?.contains(event.target as Node)) close()
+      const target = event.target as HTMLElement
+      if (container.current?.contains(target)) return
+      if (target.closest?.('[data-afs-portal]')) return
+      close()
     }
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') close()

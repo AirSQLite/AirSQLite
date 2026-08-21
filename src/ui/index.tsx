@@ -47,9 +47,27 @@ import { webviewApi } from './state/webview.js'
 import { layOutColumns, useViews, type LaidOutColumn } from './state/views.js'
 import { exportViewToCsv } from './state/csv.js'
 import { useDismissOnOutside } from './state/dismiss.js'
+import { useReorder } from './state/reorder.js'
 import './styles/theme.css'
 import './styles/grid.css'
 import './styles/panel.css'
+
+const FILTER_DEBOUNCE_MS = 150
+
+function useDebouncedValue<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    // A null/cleared value is never a keystroke — it is a table switch or a filter reset.
+    // Delivering it immediately prevents a stale filter from firing against the wrong table.
+    if (value === null || value === undefined) {
+      setDebounced(value)
+      return
+    }
+    const timer = setTimeout(() => setDebounced(value), delay)
+    return () => clearTimeout(timer)
+  }, [value, delay])
+  return debounced
+}
 
 // The app shell. It knows nothing about VS Code, WebSockets, or SQLite — only that a Client
 // answers questions. That is what lets this same bundle run in a webview, a browser tab, and
@@ -90,6 +108,7 @@ function App({ client, host }: { client: Client; host: HostServices }) {
   const [confirm, setConfirm] = useState<PendingConfirm | null>(null)
   const [canConfigure, setCanConfigure] = useState(true)
   const [primaryField, setPrimaryField] = useState('')
+  const [linkVersion, setLinkVersion] = useState(0)
   /** Which action is mid-flight, so a slow webhook cannot be fired twice by an impatient click. */
   const [runningAction, setRunningAction] = useState<number | null>(null)
   const [search, setSearch] = useState('')
@@ -188,15 +207,17 @@ function App({ client, host }: { client: Client; host: HostServices }) {
     return merged
   }, [views.config.summary, layout])
 
+  const debouncedFilter = useDebouncedValue(views.config.filter ?? null, FILTER_DEBOUNCE_MS)
+
   const querySpec = useMemo(
     () => ({
       sort,
-      filter: views.config.filter ?? null,
+      filter: debouncedFilter,
       search,
       ...(searchColumns.length > 0 ? { searchColumns } : {}),
       ...(groupColumns.length > 0 ? { groupBy: groupColumns, groupSort: groupSortConfig } : {}),
     }),
-    [sort, views.config.filter, search, searchColumns, groupColumns, groupSortConfig],
+    [sort, debouncedFilter, search, searchColumns, groupColumns, groupSortConfig],
   )
 
   const data = useTableData(client, workspace.activeTable, querySpec, announceChange)
@@ -239,7 +260,7 @@ function App({ client, host }: { client: Client; host: HostServices }) {
 
   // Foreign keys: which columns are links, where they point, and what each value is called.
   // Drives the filter builder's linked-record operators, the chips, and their editors.
-  const links = useLinks(client, workspace.activeTable)
+  const links = useLinks(client, workspace.activeTable, linkVersion)
   const actions = useActions(client, workspace.activeTable)
 
   useEffect(() => {
@@ -783,6 +804,15 @@ function App({ client, host }: { client: Client; host: HostServices }) {
     [views],
   )
 
+  const handleShowAllColumns = useCallback(
+    (columns: ColumnDescriptor[], visible: boolean) => {
+      const next: Record<string, boolean> = { ...(views.config.columnVisibility ?? {}) }
+      for (const c of columns) next[c.name] = visible
+      views.update({ columnVisibility: next })
+    },
+    [views],
+  )
+
   /**
    * Resize now, persist shortly after.
    *
@@ -857,7 +887,10 @@ function App({ client, host }: { client: Client; host: HostServices }) {
       if (!table) return
       void client
         .setMeta(table, { columns: { [column]: { displayType: type, options } } })
-        .then(() => schema.reload())
+        .then(() => {
+          schema.reload()
+          if (type === 'linked_record') setLinkVersion((n) => n + 1)
+        })
         .catch((err: Error) => toasts.error(err.message))
     },
     [client, table, data, toasts],
@@ -1016,6 +1049,7 @@ function App({ client, host }: { client: Client; host: HostServices }) {
         .then((meta) => {
           setPrimaryField(meta.primaryField)
           schema.reload()
+          setLinkVersion((n) => n + 1)
         })
         .catch((err: Error) => toasts.error(err.message))
     },
@@ -1204,8 +1238,11 @@ function App({ client, host }: { client: Client; host: HostServices }) {
 
         <HiddenColumnsMenu
           columns={schema.columns}
+          columnOrder={views.config.columnOrder}
           visibility={views.config.columnVisibility ?? {}}
           onToggle={handleShowColumn}
+          onSetAll={handleShowAllColumns}
+          onReorder={handleReorderColumns}
         />
 
         <GroupMenu
@@ -1249,6 +1286,7 @@ function App({ client, host }: { client: Client; host: HostServices }) {
             writable={views.writable}
             onSelect={views.selectView}
             onCreate={views.create}
+            onReorder={views.reorder}
           />
         ) : null}
 
@@ -1355,6 +1393,8 @@ function App({ client, host }: { client: Client; host: HostServices }) {
                     onSecondary: () => applyMultiSelect(),
                   })
                 }}
+                tables={workspace.tables.map((t) => t.name)}
+                onFetchColumns={(t) => client.columns(t)}
               />
               {data.rowCount === 0 && !data.loading ? (
                 <div class="afs-empty" data-testid="empty-table">
@@ -1732,18 +1772,45 @@ function MenuFilter({
  */
 function HiddenColumnsMenu({
   columns,
+  columnOrder,
   visibility,
   onToggle,
+  onSetAll,
+  onReorder,
 }: {
   columns: ColumnDescriptor[]
+  columnOrder: string[] | undefined
   visibility: Record<string, boolean>
   onToggle: (column: string, visible: boolean) => void
+  onSetAll: (columns: ColumnDescriptor[], visible: boolean) => void
+  onReorder: (order: string[]) => void
 }) {
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
   const container = useDismissOnOutside(open, useCallback(() => setOpen(false), []))
   const hiddenCount = columns.filter((c) => visibility[c.name] === false).length
-  const shown = columns.filter((column) => matches(column.name, filter))
+
+  const ordered = useMemo(() => {
+    if (!columnOrder || columnOrder.length === 0) return columns
+    const byName = new Map(columns.map((c) => [c.name, c]))
+    const result: ColumnDescriptor[] = []
+    for (const name of columnOrder) {
+      const col = byName.get(name)
+      if (col) { result.push(col); byName.delete(name) }
+    }
+    for (const col of columns) if (byName.has(col.name)) result.push(col)
+    return result
+  }, [columns, columnOrder])
+
+  const shown = ordered.filter((column) => matches(column.name, filter))
+  const isFiltering = filter.trim() !== ''
+
+  const reorder = useReorder({
+    items: ordered.map((c) => c.name),
+    enabled: !isFiltering,
+    orientation: 'vertical',
+    onReorder,
+  })
 
   return (
     <span class="afs-columns-menu" ref={container}>
@@ -1761,11 +1828,11 @@ function HiddenColumnsMenu({
       {open ? (
         <div class="afs-menu afs-menu--anchored" data-testid="columns-menu">
           <div class="afs-menu__toolbar">
-            <button type="button" class="afs-button" data-testid="columns-show-all" title="Show all" onClick={() => columns.forEach((c) => onToggle(c.name, true))}>
+            <button type="button" class="afs-button" data-testid="columns-show-all" title="Show all" onClick={() => onSetAll(columns, true)}>
               <span class="afs-menu__item-icon" dangerouslySetInnerHTML={{ __html: menuIcon('eye', { size: 14 }) }} />
               Show all
             </button>
-            <button type="button" class="afs-button" data-testid="columns-hide-all" title="Hide all" onClick={() => columns.forEach((c) => onToggle(c.name, false))}>
+            <button type="button" class="afs-button" data-testid="columns-hide-all" title="Hide all" onClick={() => onSetAll(columns, false)}>
               <span class="afs-menu__item-icon" dangerouslySetInnerHTML={{ __html: menuIcon('hide', { size: 14 }) }} />
               Hide all
             </button>
@@ -1781,23 +1848,33 @@ function HiddenColumnsMenu({
               No column matches "{filter}".
             </p>
           ) : null}
-          {shown.map((column) => (
-            <label key={column.name} class="afs-menu__check">
-              <input
-                type="checkbox"
-                data-testid={`column-visible-${column.name}`}
-                checked={visibility[column.name] !== false}
-                onChange={(event) =>
-                  onToggle(column.name, (event.currentTarget as HTMLInputElement).checked)
-                }
-              />
-              <span
-                class="afs-menu__item-icon"
-                dangerouslySetInnerHTML={{ __html: fieldTypeIcon(column.displayType, { size: 14 }) ?? '' }}
-              />
-              {column.name}
-            </label>
-          ))}
+          {shown.map((column) => {
+            const edge = reorder.edge(column.name)
+            return (
+              <label
+                key={column.name}
+                class={`afs-menu__check${edge ? ` afs-menu__check--drop-${edge}` : ''}${
+                  reorder.dragging === column.name ? ' afs-menu__check--dragging' : ''
+                }`}
+                {...reorder.itemProps(column.name)}
+              >
+                <span class="afs-menu__grip" aria-hidden="true" dangerouslySetInnerHTML={{ __html: menuIcon('grip_vertical', { size: 12 }) }} />
+                <input
+                  type="checkbox"
+                  data-testid={`column-visible-${column.name}`}
+                  checked={visibility[column.name] !== false}
+                  onChange={(event) =>
+                    onToggle(column.name, (event.currentTarget as HTMLInputElement).checked)
+                  }
+                />
+                <span
+                  class="afs-menu__item-icon"
+                  dangerouslySetInnerHTML={{ __html: fieldTypeIcon(column.displayType, { size: 14 }) ?? '' }}
+                />
+                {column.name}
+              </label>
+            )
+          })}
         </div>
       ) : null}
     </span>

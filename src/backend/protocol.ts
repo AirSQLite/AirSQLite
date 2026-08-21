@@ -105,8 +105,8 @@ export function createSession(ctx: HandlerContext): Session {
   // owns primary fields; this is the seam rather than a dependency in either direction.
   db.linkResolver = (table: string): Map<string, LinkTarget> => {
     const links = new Map<string, LinkTarget>()
-    for (const fk of db.foreignKeys(table)) {
-      // Composite keys have no single display column, so linked-record filtering skips them.
+    const all = [...db.foreignKeys(table), ...db.inferredForeignKeys(table), ...meta.configuredLinks(table)]
+    for (const fk of all) {
       if (fk.fromColumns.length !== 1) continue
       const from = fk.fromColumns[0]
       const to = fk.toColumns[0]
@@ -145,7 +145,7 @@ export function createSession(ctx: HandlerContext): Session {
         return meta.describeColumns(request.table)
       case 'foreign-keys':
         return {
-          outbound: db.foreignKeys(request.table),
+          outbound: [...db.foreignKeys(request.table), ...db.inferredForeignKeys(request.table), ...meta.configuredLinks(request.table)],
           inbound: db.reverseForeignKeys(request.table),
         }
 
@@ -289,6 +289,10 @@ export function createSession(ctx: HandlerContext): Session {
 
       case 'save-view':
         return meta.saveView(request.table, request.view as Partial<SavedView>)
+
+      case 'reorder-views':
+        meta.reorderViews(request.table, request.ids)
+        return meta.views(request.table)
 
       case 'delete-view':
         meta.deleteView(request.viewId)

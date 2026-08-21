@@ -165,6 +165,10 @@ export class Client {
     return this.#transport.request({ type: 'save-view', table, view })
   }
 
+  reorderViews(table: string, ids: number[]): Promise<SavedView[]> {
+    return this.#transport.request({ type: 'reorder-views', table, ids })
+  }
+
   deleteView(viewId: number): Promise<{ deleted: number }> {
     return this.#transport.request({ type: 'delete-view', viewId })
   }

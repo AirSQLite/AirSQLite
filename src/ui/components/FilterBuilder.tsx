@@ -1,3 +1,5 @@
+import { createPortal } from 'preact/compat'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import type {
   ColumnDescriptor,
   DisplayType,
@@ -8,7 +10,7 @@ import type {
   SqlValue,
 } from '../../shared/protocol.js'
 import { ColumnPicker, menuIcon } from './FieldTypeIcons.js'
-import { parseOptions } from '../state/choices.js'
+import { parseOptions, type ChoiceOptions } from '../state/choices.js'
 
 // A filter builder with no SQL in it anywhere.
 //
@@ -61,10 +63,17 @@ const BOOLEAN_OPERATORS: OperatorChoice[] = [
   { value: 'is_not_empty', label: 'is not empty', arity: 0 },
 ]
 
-const SELECT_OPERATORS: OperatorChoice[] = [
+const SINGLE_SELECT_OPERATORS: OperatorChoice[] = [
   { value: 'is', label: 'is', arity: 1 },
   { value: 'is_not', label: 'is not', arity: 1 },
-  { value: 'contains', label: 'contains', arity: 1 },
+  { value: 'is_empty', label: 'is empty', arity: 0 },
+  { value: 'is_not_empty', label: 'is not empty', arity: 0 },
+]
+
+const MULTI_SELECT_OPERATORS: OperatorChoice[] = [
+  { value: 'has_any', label: 'has any of', arity: 1 },
+  { value: 'has_all', label: 'has all of', arity: 1 },
+  { value: 'has_none', label: 'has none of', arity: 1 },
   { value: 'is_empty', label: 'is empty', arity: 0 },
   { value: 'is_not_empty', label: 'is not empty', arity: 0 },
 ]
@@ -90,8 +99,9 @@ export function operatorsFor(type: DisplayType | undefined, isLink: boolean): Op
     case 'toggle':
       return BOOLEAN_OPERATORS
     case 'single_select':
+      return SINGLE_SELECT_OPERATORS
     case 'multi_select':
-      return SELECT_OPERATORS
+      return MULTI_SELECT_OPERATORS
     default:
       return TEXT_OPERATORS
   }
@@ -351,6 +361,7 @@ function ConditionEditor({ condition, columns, linkColumns, onChange }: Conditio
         <ValueInput
           descriptor={descriptor}
           isLink={isLink}
+          operator={condition.operator}
           value={Array.isArray(condition.value) ? '' : (condition.value ?? '')}
           onChange={setValue}
         />
@@ -361,6 +372,7 @@ function ConditionEditor({ condition, columns, linkColumns, onChange }: Conditio
           <ValueInput
             descriptor={descriptor}
             isLink={isLink}
+            operator={condition.operator}
             value={pair[0]}
             testId="filter-value-low"
             onChange={(next) => setValue([next, pair[1]])}
@@ -368,6 +380,7 @@ function ConditionEditor({ condition, columns, linkColumns, onChange }: Conditio
           <ValueInput
             descriptor={descriptor}
             isLink={isLink}
+            operator={condition.operator}
             value={pair[1]}
             testId="filter-value-high"
             onChange={(next) => setValue([pair[0], next])}
@@ -378,21 +391,23 @@ function ConditionEditor({ condition, columns, linkColumns, onChange }: Conditio
   )
 }
 
+const CHIP_OPERATORS = new Set<FilterOperator>(['is', 'is_not', 'has_any', 'has_all', 'has_none'])
+
 function ValueInput({
   descriptor,
   isLink,
+  operator,
   value,
   onChange,
   testId = 'filter-value',
 }: {
   descriptor: ColumnDescriptor | undefined
   isLink: boolean
+  operator: FilterOperator
   value: SqlValue
   onChange: (value: SqlValue) => void
   testId?: string
 }) {
-  // A foreign key column holds integers, so it infers as a number — but what the user types
-  // into a linked-record filter is the *other* table's display value, which is text.
   const type = isLink ? 'text' : (descriptor?.displayType ?? 'text')
   const text = value === null || value === undefined ? '' : String(value)
 
@@ -410,24 +425,10 @@ function ValueInput({
     )
   }
 
-  const choices = parseOptions(descriptor?.options).choices.map((c) => c.value)
+  const options = parseOptions(descriptor?.options)
 
-  if (choices.length > 0) {
-    return (
-      <select
-        class="afs-filter__value"
-        data-testid={testId}
-        value={text}
-        onChange={(event) => onChange((event.currentTarget as HTMLSelectElement).value)}
-      >
-        <option value="">—</option>
-        {choices.map((choice) => (
-          <option key={choice} value={choice}>
-            {choice}
-          </option>
-        ))}
-      </select>
-    )
+  if (options.choices.length > 0 && CHIP_OPERATORS.has(operator)) {
+    return <ChipPicker options={options} value={text} onChange={(v) => onChange(v)} testId={testId} />
   }
 
   return (
@@ -441,5 +442,190 @@ function ValueInput({
         onChange((type === 'number' || type === 'currency') && raw !== '' ? Number(raw) : raw)
       }}
     />
+  )
+}
+
+const CHIP_RENDER_CAP = 100
+const TRIGGER_CHIP_CAP = 3
+
+function parseSelected(raw: string): Set<string> {
+  if (!raw) return new Set()
+  const trimmed = raw.trim()
+  if (trimmed.startsWith('[')) {
+    try {
+      const arr: unknown = JSON.parse(trimmed)
+      if (Array.isArray(arr)) return new Set(arr.map(String).filter(Boolean))
+    } catch {}
+  }
+  return new Set([raw])
+}
+
+function serializeSelected(selected: Set<string>): string {
+  if (selected.size === 0) return ''
+  return JSON.stringify([...selected])
+}
+
+function ChipPicker({
+  options,
+  value,
+  onChange,
+  testId,
+}: {
+  options: ChoiceOptions
+  value: string
+  onChange: (value: string) => void
+  testId: string
+}) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
+  const [pos, setPos] = useState<{ top: number; left: number; minWidth: number }>({ top: 0, left: 0, minWidth: 0 })
+
+  const selected = useMemo(() => parseSelected(value), [value])
+
+  const colorMap = useMemo(() => {
+    if (!options.colored) return null
+    const m = new Map<string, string>()
+    for (const c of options.choices) m.set(c.value, c.color)
+    return m
+  }, [options.choices, options.colored])
+
+  const chipStyle = useCallback(
+    (v: string): { background?: string } => {
+      if (!colorMap) return {}
+      const color = colorMap.get(v)
+      return color ? { background: `var(--afs-choice-${color})` } : {}
+    },
+    [colorMap],
+  )
+
+  const toggle = useCallback(() => {
+    if (!open && triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect()
+      setPos({ top: rect.bottom + 2, left: rect.left, minWidth: Math.max(rect.width, 180) })
+    }
+    setOpen((v) => !v)
+    setSearch('')
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    requestAnimationFrame(() => searchRef.current?.focus())
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as Node
+      if (triggerRef.current?.contains(target)) return
+      if (listRef.current?.contains(target)) return
+      setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.stopPropagation(); setOpen(false) }
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  const needle = search.toLowerCase()
+  const filtered = useMemo(() => {
+    const matches = options.choices.filter((c) => c.value.toLowerCase().includes(needle))
+    if (!needle) {
+      const checked = matches.filter((c) => selected.has(c.value))
+      const unchecked = matches.filter((c) => !selected.has(c.value))
+      return [...checked, ...unchecked]
+    }
+    return matches
+  }, [options.choices, needle, selected])
+
+  const capped = filtered.length > CHIP_RENDER_CAP
+  const rendered = capped ? filtered.slice(0, CHIP_RENDER_CAP) : filtered
+
+  const toggleValue = useCallback(
+    (v: string) => {
+      const next = new Set(selected)
+      if (next.has(v)) next.delete(v)
+      else next.add(v)
+      onChange(serializeSelected(next))
+    },
+    [selected, onChange],
+  )
+
+  const selectedArr = useMemo(() => [...selected], [selected])
+
+  return (
+    <div class="afs-filter__chips" data-testid={testId}>
+      <button
+        type="button"
+        ref={triggerRef}
+        class="afs-filter__chip-trigger"
+        onClick={toggle}
+      >
+        {selected.size > 0 ? (
+          <span class="afs-tags">
+            {selectedArr.slice(0, TRIGGER_CHIP_CAP).map((v) => (
+              <span key={v} class="afs-tag" style={chipStyle(v)}>{v}</span>
+            ))}
+            {selected.size > TRIGGER_CHIP_CAP ? (
+              <span class="afs-filter__chip-more">+{selected.size - TRIGGER_CHIP_CAP}</span>
+            ) : null}
+          </span>
+        ) : (
+          <span class="afs-filter__chip-placeholder">Select values...</span>
+        )}
+      </button>
+      {open
+        ? createPortal(
+            <div
+              ref={listRef}
+              class="afs-filter__chip-list"
+              data-afs-portal=""
+              style={{ top: `${pos.top}px`, left: `${pos.left}px`, minWidth: `${pos.minWidth}px` }}
+            >
+              <input
+                ref={searchRef}
+                type="text"
+                class="afs-filter__chip-search"
+                placeholder={`Search ${options.choices.length} options...`}
+                value={search}
+                onInput={(e) => setSearch((e.currentTarget as HTMLInputElement).value)}
+              />
+              {rendered.map((c) => (
+                <button
+                  key={c.value}
+                  type="button"
+                  class="afs-filter__chip-option"
+                  data-selected={selected.has(c.value) ? '' : undefined}
+                  onClick={() => toggleValue(c.value)}
+                >
+                  <span class={`afs-filter__chip-check${selected.has(c.value) ? ' afs-filter__chip-check--on' : ''}`} />
+                  <span class="afs-tag" style={chipStyle(c.value)}>{c.value}</span>
+                </button>
+              ))}
+              {capped ? (
+                <div class="afs-filter__chip-empty">
+                  {filtered.length - CHIP_RENDER_CAP} more — type to narrow
+                </div>
+              ) : null}
+              {filtered.length === 0 ? (
+                <div class="afs-filter__chip-empty">No matches</div>
+              ) : null}
+              {selected.size > 0 ? (
+                <button
+                  type="button"
+                  class="afs-filter__chip-clear"
+                  onClick={() => onChange('')}
+                >
+                  Clear all
+                </button>
+              ) : null}
+            </div>,
+            document.body,
+          )
+        : null}
+    </div>
   )
 }

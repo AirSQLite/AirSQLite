@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
 import type {
   ActionDefinition,
   ColumnDescriptor,
+  ColumnInfo,
   DisplayType,
   Row,
   SortSpec,
@@ -161,6 +162,8 @@ export interface GridProps {
   onSetAllTimezones: (tz: string) => void
   onSplitCommaValues: (column: string) => Promise<number>
   onConfirmCommaSplit: (column: string, values: string[], applyType: () => void) => void
+  tables: string[]
+  onFetchColumns: (table: string) => Promise<ColumnInfo[]>
 }
 
 interface RenderColumn {
@@ -274,10 +277,14 @@ export function Grid({
   onSetAllTimezones,
   onSplitCommaValues,
   onConfirmCommaSplit,
+  tables,
+  onFetchColumns,
 }: GridProps) {
   const scroller = useRef<HTMLDivElement>(null)
   const [scrollTop, setScrollTop] = useState(0)
+  const [hRange, setHRange] = useState<{ first: number; last: number } | null>(null)
   const [viewportHeight, setViewportHeight] = useState(600)
+  const [viewportWidth, setViewportWidth] = useState(1200)
   const [editing, setEditing] = useState<ActiveCell | null>(null)
   const [cursor, setCursor] = useState<CellCursor | null>(null)
   /** Where a shift-extended range started. Null when the cursor is a single cell. */
@@ -290,24 +297,24 @@ export function Grid({
     chromeCount,
   } = toRenderColumns(layout, editable, frozenDataColumns, rowActions.length, canConfigure)
 
-  const prevDataColumns = useRef<Set<string> | null>(null)
   useEffect(() => {
-    const dataColumns = columns.filter((c) => c.kind === 'data')
-    const currentKeys = new Set(dataColumns.map((c) => c.key))
-    const prev = prevDataColumns.current
-    prevDataColumns.current = currentKeys
-    const added = prev
-      ? dataColumns.filter((c) => !prev.has(c.key))
-      : dataColumns.filter((c) => c.width === DEFAULT_COLUMN_WIDTH)
-    if (added.length === 0) return
-    requestAnimationFrame(() => { for (const col of added) autoFit(col) })
+    setHRange(null)
+  }, [allColumns])
+
+  useEffect(() => {
+    const unsized = columns.filter((c) => c.kind === 'data' && c.width === DEFAULT_COLUMN_WIDTH)
+    if (unsized.length === 0) return
+    requestAnimationFrame(() => { for (const col of unsized) autoFit(col) })
   }, [columns])
 
   useLayoutEffect(() => {
     const element = scroller.current
     if (!element) return
 
-    const measure = () => setViewportHeight(element.clientHeight)
+    const measure = () => {
+      setViewportHeight(element.clientHeight)
+      setViewportWidth(element.clientWidth)
+    }
     measure()
 
     const observer = new ResizeObserver(measure)
@@ -335,6 +342,57 @@ export function Grid({
     runningOffset += columns[i]?.width ?? 0
   }
   const freezeEdgeLeft = runningOffset
+
+  // Horizontal column virtualization: only render cells within the horizontal viewport.
+  // Uses a column index range (hRange) rather than raw scrollLeft so that scrolling
+  // within the overscan zone is pure CSS — no re-render until a column enters or exits.
+  const H_OVERSCAN_PX = 300
+
+  // Compute the effective range — on first render (hRange null), derive from viewport width.
+  const effectiveHRange = hRange ?? (() => {
+    const vw = viewportWidth
+    let colLeft = 0
+    let first = columns.length
+    let last = -1
+    for (let i = 0; i < columns.length; i++) {
+      const w = columns[i]!.width
+      if (i >= frozenCount) {
+        const colRight = colLeft + w
+        if (colRight > freezeEdgeLeft - H_OVERSCAN_PX && colLeft < vw + H_OVERSCAN_PX) {
+          if (i < first) first = i
+          last = i
+        }
+      }
+      colLeft += w
+    }
+    return first <= last ? { first, last } : { first: frozenCount, last: columns.length - 1 }
+  })()
+
+  type BodyRenderItem =
+    | { type: 'spacer'; width: number; key: string }
+    | { type: 'cell'; columnIndex: number }
+  const bodyRenderPlan: BodyRenderItem[] = []
+  {
+    let gapWidth = 0
+    let gapStart = -1
+    for (let i = 0; i < columns.length; i++) {
+      const w = columns[i]!.width
+      const visible = i < frozenCount || (i >= effectiveHRange.first && i <= effectiveHRange.last)
+      if (visible) {
+        if (gapWidth > 0) {
+          bodyRenderPlan.push({ type: 'spacer', width: gapWidth, key: `sp${gapStart}` })
+          gapWidth = 0
+        }
+        bodyRenderPlan.push({ type: 'cell', columnIndex: i })
+      } else {
+        if (gapWidth === 0) gapStart = i
+        gapWidth += w
+      }
+    }
+    if (gapWidth > 0) {
+      bodyRenderPlan.push({ type: 'spacer', width: gapWidth, key: `sp${gapStart}` })
+    }
+  }
 
   const columnStyle = (column: RenderColumn, index: number) => {
     const style: Record<string, string> = {
@@ -721,6 +779,32 @@ export function Grid({
         const el = event.currentTarget as HTMLDivElement
         setScrollTop(el.scrollTop)
         onHorizontalScroll?.(el.scrollLeft, el.offsetWidth - el.clientWidth)
+
+        // Only re-render for horizontal virtualization when a column enters or exits
+        // the viewport. Scrolling within the overscan zone stays pure CSS.
+        const H_OVERSCAN_PX = 300
+        const sl = el.scrollLeft
+        const vw = el.clientWidth
+        const visLeft = sl + freezeEdgeLeft - H_OVERSCAN_PX
+        const visRight = sl + vw + H_OVERSCAN_PX
+        let first = columns.length
+        let last = -1
+        let colLeft = 0
+        for (let i = 0; i < columns.length; i++) {
+          const w = columns[i]!.width
+          if (i >= frozenCount) {
+            const colRight = colLeft + w
+            if (colRight > visLeft && colLeft < visRight) {
+              if (i < first) first = i
+              last = i
+            }
+          }
+          colLeft += w
+        }
+        if (first > last) { first = frozenCount; last = columns.length - 1 }
+        setHRange((prev) =>
+          prev && prev.first === first && prev.last === last ? prev : { first, last },
+        )
       }}
     >
       <div class="afs-grid__header" role="row">
@@ -877,6 +961,8 @@ export function Grid({
                   onSetAllTimezones={onSetAllTimezones}
                   onSplitCommaValues={onSplitCommaValues}
                   onConfirmCommaSplit={onConfirmCommaSplit}
+                  tables={tables}
+                  onFetchColumns={onFetchColumns}
                 />
               ) : null}
 
@@ -937,18 +1023,22 @@ export function Grid({
                 role="row"
                 data-row-index={index}
               >
-                {columns.map((column, columnIndex) => {
+                {bodyRenderPlan.map((planItem) => {
+                  if (planItem.type === 'spacer') {
+                    return <div key={planItem.key} style={{ width: `${planItem.width}px`, flexShrink: 0 }} />
+                  }
+                  const columnIndex = planItem.columnIndex
+                  const column = columns[columnIndex]!
                   const isEditing =
                     editing !== null && rowid === editing.rowid && column.key === editing.column
                   const externallyChanged =
                     rowid !== null && data.changes.cells.has(changeKey(rowid, column.key))
-                  // The cursor addresses data columns; chrome columns cannot be landed on.
                   const dataIndex = columnIndex - chromeCount
 
                   return (
                   <GridCell
                     key={column.key}
-                    rowNumber={(item?.rowIndex ?? index) + 1}
+                    rowNumber={(item?.kind === 'row' ? item.rowIndex : index) + 1}
                     client={client}
                     links={links}
                     rowActions={rowActions}
@@ -963,20 +1053,18 @@ export function Grid({
                       cursor !== null && cursor.display === index && cursor.column === dataIndex
                     }
                     inSelection={dataIndex >= 0 && inRange(range, index, dataIndex)}
-                    onFocusCell={() => {
+                    onFocusCell={(shift: boolean) => {
                       if (dataIndex >= 0) {
+                        if (shift && cursor) {
+                          setAnchor((prev) => prev ?? cursor)
+                        } else {
+                          setAnchor(null)
+                        }
                         setCursor({ display: index, column: dataIndex })
-                        setAnchor(null)
-                        // Selecting a cell has to leave the keyboard pointed at the grid, or
-                        // the arrow keys go wherever focus happened to be. preventScroll
-                        // because focusing a scroller otherwise yanks it back to the top.
                         scroller.current?.focus({ preventScroll: true })
                       }
                     }}
                     changed={externallyChanged}
-                    // Somebody else wrote to the very cell being edited. The draft is safe —
-                    // the editor holds its own state — but the user has to be told the ground
-                    // moved, or they will overwrite a change they never saw.
                     conflicted={isEditing && externallyChanged}
                     className={frozenClass(columnIndex, 'afs-cell')}
                     style={columnStyle(column, columnIndex)}
@@ -1024,7 +1112,7 @@ interface GridCellProps {
   cursor: boolean
   /** Part of a shift-extended range, which is what copy takes. */
   inSelection: boolean
-  onFocusCell: () => void
+  onFocusCell: (shift: boolean) => void
   /** An external write moved this value in the last couple of seconds. */
   changed: boolean
   /** ...and the user is mid-edit on it. */
@@ -1212,13 +1300,16 @@ function GridCell({
       //
       // Checkboxes, toggles, chips, and links stop propagation themselves, so clicking those
       // still acts on the control rather than the cell.
-      onClick={() => {
-        if (cursor && canEdit && !editing) {
+      onMouseDown={(event) => {
+        if (event.shiftKey) event.preventDefault()
+      }}
+      onClick={(event) => {
+        if (cursor && canEdit && !editing && !event.shiftKey) {
           onStartEdit({ rowid, column: column.key })
           return
         }
-        onFocusCell()
-        if (rowid !== null) onFocusRow(rowid)
+        onFocusCell(event.shiftKey)
+        if (rowid !== null && !event.shiftKey) onFocusRow(rowid)
       }}
     >
       {peeking ? (
@@ -1266,6 +1357,7 @@ function GridCell({
           column={descriptor}
           value={value}
           readOnly={!canEdit}
+          maxChips={3}
           onToggle={(next) => {
             if (canEdit) onCommit(rowid, column.key, next)
           }}

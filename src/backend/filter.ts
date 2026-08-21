@@ -61,6 +61,21 @@ function asText(condition: FilterCondition): string {
   return value === null ? '' : String(value)
 }
 
+function jsonQuote(value: string): string {
+  return JSON.stringify(value)
+}
+
+function parseMultiValue(value: SqlValue | [SqlValue, SqlValue] | undefined): string[] | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed.startsWith('[')) return null
+  try {
+    const parsed: unknown = JSON.parse(trimmed)
+    if (Array.isArray(parsed)) return parsed.map((v) => String(v))
+  } catch {}
+  return null
+}
+
 function compileCondition(condition: FilterCondition, ctx: FilterContext): CompiledFilter {
   if (!ctx.columns.has(condition.column)) {
     throw new ProtocolError(`There is no column named "${condition.column}" in this table.`)
@@ -103,7 +118,7 @@ function compileCondition(condition: FilterCondition, ctx: FilterContext): Compi
       return like(`%${escapeLike(asText(condition))}`)
 
     case 'is':
-    case 'eq':
+    case 'eq': {
       // On a linked column every operator works against the display value. Matching `is`
       // against the raw key while `contains` matched the primary field would mean the same
       // dropdown behaved differently depending on which operator was chosen.
@@ -115,10 +130,19 @@ function compileCondition(condition: FilterCondition, ctx: FilterContext): Compi
           params: [asScalar(condition)],
         }
       }
+      const multi = parseMultiValue(condition.value)
+      if (multi) {
+        if (multi.length === 0) return { sql: '1=1', params: [] }
+        return {
+          sql: `${col} IN (${multi.map(() => '?').join(', ')})`,
+          params: multi,
+        }
+      }
       return { sql: `${col} = ?`, params: [asScalar(condition)] }
+    }
 
     case 'is_not':
-    case 'neq':
+    case 'neq': {
       if (link) {
         return {
           sql: `(${col} IS NULL OR ${col} NOT IN (SELECT ${quoteIdent(
@@ -127,7 +151,16 @@ function compileCondition(condition: FilterCondition, ctx: FilterContext): Compi
           params: [asScalar(condition)],
         }
       }
+      const multi = parseMultiValue(condition.value)
+      if (multi) {
+        if (multi.length === 0) return { sql: '1=1', params: [] }
+        return {
+          sql: `(${col} IS NULL OR ${col} NOT IN (${multi.map(() => '?').join(', ')}))`,
+          params: multi,
+        }
+      }
       return { sql: `(${col} IS NULL OR ${col} <> ?)`, params: [asScalar(condition)] }
+    }
 
     case 'gt':
       return { sql: `${col} > ?`, params: [asScalar(condition)] }
@@ -153,6 +186,27 @@ function compileCondition(condition: FilterCondition, ctx: FilterContext): Compi
 
     case 'is_not_empty':
       return { sql: `(${col} IS NOT NULL AND ${col} <> '')`, params: [] }
+
+    case 'has_any': {
+      const values = parseMultiValue(condition.value) ?? [asText(condition)]
+      if (values.length === 0) return { sql: '1=1', params: [] }
+      const checks = values.map(() => `instr(${col}, ?) > 0`)
+      return { sql: `(${checks.join(' OR ')})`, params: values.map(jsonQuote) }
+    }
+
+    case 'has_all': {
+      const values = parseMultiValue(condition.value) ?? [asText(condition)]
+      if (values.length === 0) return { sql: '1=1', params: [] }
+      const checks = values.map(() => `instr(${col}, ?) > 0`)
+      return { sql: `(${checks.join(' AND ')})`, params: values.map(jsonQuote) }
+    }
+
+    case 'has_none': {
+      const values = parseMultiValue(condition.value) ?? [asText(condition)]
+      if (values.length === 0) return { sql: '1=1', params: [] }
+      const checks = values.map(() => `instr(${col}, ?) = 0`)
+      return { sql: `(${col} IS NULL OR ${col} = '' OR (${checks.join(' AND ')}))`, params: values.map(jsonQuote) }
+    }
 
     default: {
       const unreachable: never = condition.operator
@@ -186,15 +240,30 @@ export function compileFilter(
  * Free-text search across the given columns. Separate from the filter tree because it is a
  * different gesture: one box, every visible column, no operator to choose.
  */
-export function compileSearch(query: string, searchColumns: string[]): CompiledFilter {
+export function compileSearch(
+  query: string,
+  searchColumns: string[],
+  links?: Map<string, LinkTarget>,
+): CompiledFilter {
   const text = query.trim()
   if (text === '' || searchColumns.length === 0) return { sql: '1=1', params: [] }
 
   const pattern = `%${escapeLike(text)}%`
-  return {
-    sql: `(${searchColumns
-      .map((c) => `${quoteIdent(c)} LIKE ? ESCAPE '\\'`)
-      .join(' OR ')})`,
-    params: searchColumns.map(() => pattern),
+  const clauses: string[] = []
+  const params: SqlValue[] = []
+  for (const c of searchColumns) {
+    const col = quoteIdent(c)
+    const link = links?.get(c)
+    if (link) {
+      clauses.push(
+        `${col} IN (SELECT ${quoteIdent(link.keyColumn)} FROM ${quoteIdent(
+          link.table,
+        )} WHERE ${quoteIdent(link.primaryField)} LIKE ? ESCAPE '\\')`,
+      )
+    } else {
+      clauses.push(`${col} LIKE ? ESCAPE '\\'`)
+    }
+    params.push(pattern)
   }
+  return { sql: `(${clauses.join(' OR ')})`, params }
 }

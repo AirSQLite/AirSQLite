@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'preact/hooks'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import type { SavedView } from '../../shared/protocol.js'
 import { menuIcon } from './FieldTypeIcons.js'
+import { useReorder } from '../state/reorder.js'
 
 // Views are per table and live in the database file, so they travel with it.
 //
@@ -282,6 +283,7 @@ export interface ViewsPanelProps {
   writable: boolean
   onSelect: (id: number) => void
   onCreate: (name: string) => void
+  onReorder: (ids: number[]) => void
 }
 
 /**
@@ -299,6 +301,7 @@ export function ViewsPanel({
   writable,
   onSelect,
   onCreate,
+  onReorder,
 }: ViewsPanelProps) {
   const [filter, setFilter] = useState('')
 
@@ -312,17 +315,28 @@ export function ViewsPanel({
   }
 
   const needle = filter.trim().toLowerCase()
-  const shown = needle
+  const isFiltering = needle !== ''
+  const shown = isFiltering
     ? views.filter((view) => view.name.toLowerCase().includes(needle))
     : views
+
+  const viewIds = useMemo(() => views.map((v) => String(v.id)), [views])
+  const idMap = useMemo(() => new Map(views.map((v) => [String(v.id), v])), [views])
+
+  const reorder = useReorder({
+    items: viewIds,
+    enabled: writable && !isFiltering,
+    orientation: 'vertical',
+    onReorder: useCallback(
+      (next: string[]) => onReorder(next.map(Number)),
+      [onReorder],
+    ),
+  })
 
   return (
     <aside class="afs-views-panel" data-testid="view-list" aria-label="Views">
       <div class="afs-views-panel__head">Views</div>
 
-      {/* Always shown. It was hidden below five views on the theory that a short list is its
-          own search — but a control that appears once a table crosses a threshold is a control
-          nobody knows exists, and the panel is the one place someone would look for it. */}
       <input
         class="afs-views-panel__search"
         data-testid="view-search"
@@ -337,25 +351,36 @@ export function ViewsPanel({
       <div class="afs-views-panel__list" role="menu">
         {shown.length === 0 ? (
           <p class="afs-menu__hint" data-testid="view-search-empty">
-            No view matches “{filter}”.
+            No view matches "{filter}".
           </p>
         ) : null}
-        {shown.map((view) => (
-          <button
-            key={view.id}
-            type="button"
-            class={`afs-views-panel__item${
-              view.id === activeViewId ? ' afs-views-panel__item--on' : ''
-            }`}
-            role="menuitem"
-            data-view-id={view.id}
-            title={view.description ?? view.name}
-            onClick={() => onSelect(view.id)}
-          >
-            <span class="afs-views-panel__name">{view.name}</span>
-            {view.isDefault ? <span class="afs-views-panel__tag">default</span> : null}
-          </button>
-        ))}
+        {shown.map((view, index) => {
+          const key = String(view.id)
+          const edge = reorder.edge(key)
+          return (
+            <div
+              key={view.id}
+              class={`afs-views-panel__item${
+                view.id === activeViewId ? ' afs-views-panel__item--on' : ''
+              }${reorder.dragging === key ? ' afs-views-panel__item--dragging' : ''}${
+                edge ? ` afs-views-panel__item--drop-${edge}` : ''
+              }`}
+              role="menuitem"
+              data-view-id={view.id}
+              title={view.description ?? view.name}
+              onClick={() => onSelect(view.id)}
+              {...(writable && !isFiltering ? reorder.itemProps(key) : {})}
+            >
+              {writable && !isFiltering ? (
+                <span class="afs-views-panel__grip" aria-hidden="true"
+                  dangerouslySetInnerHTML={{ __html: menuIcon('grip_vertical', { size: 12 }) }}
+                />
+              ) : null}
+              <span class="afs-views-panel__name">{view.name}</span>
+              {index === 0 ? <span class="afs-views-panel__tag">default</span> : null}
+            </div>
+          )
+        })}
       </div>
 
       {writable ? (

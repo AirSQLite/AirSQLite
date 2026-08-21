@@ -3,6 +3,7 @@ import type {
   ColumnDisplay,
   ColumnInfo,
   DisplayType,
+  ForeignKeyInfo,
   SavedView,
   SqlValue,
   SummaryFunction,
@@ -89,6 +90,7 @@ interface ViewRow {
   config: string
   description: string | null
   is_default: number
+  sort_order: number | null
   created_at: string
   updated_at: string
 }
@@ -122,6 +124,7 @@ const DISPLAY_TYPES = new Set<DisplayType>([
   'percent',
   'duration',
   'rating',
+  'linked_record',
 ])
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -236,6 +239,7 @@ export class Meta {
     this.#addColumn('_airsqlite_tables', 'last_view_id', 'INTEGER')
     this.#addColumn('_airsqlite_columns', 'description', 'TEXT')
     this.#addColumn('_airsqlite_views', 'description', 'TEXT')
+    this.#addColumn('_airsqlite_views', 'sort_order', 'INTEGER')
     this.#foldColumnLayoutIntoViews()
   }
 
@@ -562,11 +566,12 @@ export class Meta {
 
       if (configured?.displayType) return { ...column, ...configured, description }
 
+      const inferred = inferDisplayType(column, samples.get(column.name) ?? [])
       return {
         ...column,
-        displayType: inferDisplayType(column, samples.get(column.name) ?? []),
+        displayType: inferred,
         displayTypeInferred: true,
-        options: null,
+        options: inferSelectOptions(inferred, samples.get(column.name) ?? []),
         description,
       }
     })
@@ -639,6 +644,29 @@ export class Meta {
       )
       .run(table, column, type, options ? JSON.stringify(options) : null)
     this.onConfigChange?.()
+  }
+
+  /**
+   * Manually configured linked-record columns: columns whose display type is `linked_record`
+   * with `targetTable` and `keyColumn` in their options. Returns synthetic ForeignKeyInfo
+   * entries so the link resolution pipeline treats them the same as schema-declared FKs.
+   */
+  configuredLinks(table: string): ForeignKeyInfo[] {
+    const stored = this.storedDisplays(table)
+    const results: ForeignKeyInfo[] = []
+    for (const [column, config] of stored) {
+      if (config.displayType !== 'linked_record') continue
+      const opts = config.options as Record<string, unknown> | null
+      if (!opts?.targetTable || !opts?.keyColumn) continue
+      results.push({
+        id: -2,
+        fromColumns: [column],
+        toTable: opts.targetTable as string,
+        toColumns: [opts.keyColumn as string],
+        inferred: true,
+      })
+    }
+    return results
   }
 
   /**
@@ -735,8 +763,9 @@ export class Meta {
   #viewRows(table: string): ViewRow[] {
     return this.#db.connection
       .prepare(
-        `SELECT id, table_name, name, config, description, is_default, created_at, updated_at
-           FROM _airsqlite_views WHERE table_name = ? ORDER BY is_default DESC, id`,
+        `SELECT id, table_name, name, config, description, is_default, sort_order, created_at, updated_at
+           FROM _airsqlite_views WHERE table_name = ?
+           ORDER BY COALESCE(sort_order, 999999), is_default DESC, id`,
       )
       .all(table) as ViewRow[]
   }
@@ -867,10 +896,22 @@ export class Meta {
     this.onConfigChange?.()
   }
 
+  reorderViews(table: string, ids: number[]): void {
+    this.#requireWritable()
+    this.#db.connection.transaction(() => {
+      for (let i = 0; i < ids.length; i++) {
+        this.#db.connection
+          .prepare('UPDATE _airsqlite_views SET sort_order = ?, is_default = ? WHERE id = ? AND table_name = ?')
+          .run(i, i === 0 ? 1 : 0, ids[i], table)
+      }
+    })()
+    this.onConfigChange?.()
+  }
+
   #view(id: number): SavedView {
     const row = this.#db.connection
       .prepare(
-        `SELECT id, table_name, name, config, description, is_default, created_at, updated_at
+        `SELECT id, table_name, name, config, description, is_default, sort_order, created_at, updated_at
            FROM _airsqlite_views WHERE id = ?`,
       )
       .get(id) as ViewRow | undefined
@@ -947,12 +988,42 @@ export function inferDisplayType(column: ColumnInfo, samples: SqlValue[]): Displ
   return 'text'
 }
 
-/** Multi-select has one canonical storage format: a JSON array in a TEXT column. */
+function inferSelectOptions(
+  displayType: DisplayType,
+  samples: SqlValue[],
+): Record<string, unknown> | null {
+  if (displayType !== 'multi_select') return null
+
+  const seen = new Set<string>()
+  for (const sample of samples) {
+    if (sample === null || sample === undefined) continue
+    const str = String(sample).trim()
+    if (!str) continue
+    try {
+      const parsed: unknown = JSON.parse(str)
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          const tag = String(item).trim()
+          if (tag) seen.add(tag)
+        }
+      }
+    } catch {
+      if (str) seen.add(str)
+    }
+  }
+
+  if (seen.size === 0) return null
+  return { choices: [...seen].sort() }
+}
+
+/** Multi-select: a JSON array of primitives (strings or numbers), not objects. */
 function isJsonArray(value: string): boolean {
   const trimmed = value.trim()
   if (!trimmed.startsWith('[') || !trimmed.endsWith(']')) return false
   try {
-    return Array.isArray(JSON.parse(trimmed))
+    const parsed: unknown = JSON.parse(trimmed)
+    if (!Array.isArray(parsed) || parsed.length === 0) return false
+    return parsed.every((item) => typeof item === 'string' || typeof item === 'number')
   } catch {
     return false
   }

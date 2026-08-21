@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
-import type { ColumnDescriptor, DisplayType } from '../../shared/protocol.js'
+import type { ColumnDescriptor, ColumnInfo, DisplayType } from '../../shared/protocol.js'
 import { ChoiceEditor } from './ChoiceEditor.js'
 import { TypePicker, menuIcon } from './FieldTypeIcons.js'
-import { addValues, parseOptions, serializeOptions, type ChoiceOptions } from '../state/choices.js'
+import { addValues, parseOptions, parsePastedValues, serializeOptions, type ChoiceOptions } from '../state/choices.js'
 
 // The column header menu: sort, hide, freeze, and field type.
 //
@@ -26,6 +26,7 @@ const TYPES: Array<{ value: DisplayType; label: string }> = [
   { value: 'phone', label: 'Phone' },
   { value: 'duration', label: 'Duration' },
   { value: 'rating', label: 'Rating' },
+  { value: 'linked_record', label: 'Linked record' },
 ]
 
 const HAS_CHOICES = new Set<DisplayType>(['single_select', 'multi_select'])
@@ -54,6 +55,8 @@ export interface ColumnHeaderMenuProps {
   onSetAllTimezones: (tz: string) => void
   onSplitCommaValues: (column: string) => Promise<number>
   onConfirmCommaSplit: (column: string, values: string[], applyType: () => void) => void
+  tables: string[]
+  onFetchColumns: (table: string) => Promise<ColumnInfo[]>
 }
 
 export function ColumnHeaderMenu({
@@ -78,11 +81,23 @@ export function ColumnHeaderMenu({
   onSetAllTimezones,
   onSplitCommaValues,
   onConfirmCommaSplit,
+  tables,
+  onFetchColumns,
 }: ColumnHeaderMenuProps) {
   const container = useRef<HTMLDivElement>(null)
   const current = column.displayType ?? 'text'
   const [choices, setChoices] = useState<ChoiceOptions>(() => parseOptions(column.options))
   const [description, setDescription] = useState(column.description ?? '')
+
+  const opts = column.options as Record<string, unknown> | null
+  const [linkTable, setLinkTable] = useState<string>((opts?.targetTable as string) ?? '')
+  const [linkColumn, setLinkColumn] = useState<string>((opts?.keyColumn as string) ?? '')
+  const [linkTableColumns, setLinkTableColumns] = useState<ColumnInfo[]>([])
+
+  useEffect(() => {
+    if (!linkTable) { setLinkTableColumns([]); return }
+    void onFetchColumns(linkTable).then(setLinkTableColumns).catch(() => setLinkTableColumns([]))
+  }, [linkTable, onFetchColumns])
 
   useEffect(() => {
     const onDown = (event: MouseEvent) => {
@@ -108,6 +123,12 @@ export function ColumnHeaderMenu({
    * a new query.
    */
   const applyType = (type: DisplayType) => {
+    if (type === 'linked_record') {
+      onSetDisplayType(type, linkTable && linkColumn
+        ? { targetTable: linkTable, keyColumn: linkColumn }
+        : null)
+      return
+    }
     if (!HAS_CHOICES.has(type)) {
       onSetDisplayType(type, null)
       return
@@ -123,7 +144,13 @@ export function ColumnHeaderMenu({
         return
       }
       void onHarvestValues().then((values) => {
-        const withCommas = values.filter((v) => v.includes(','))
+        const withCommas = values.filter((v) => {
+          const t = v.trim()
+          if (t.startsWith('[')) {
+            try { if (Array.isArray(JSON.parse(t))) return false } catch {}
+          }
+          return v.includes(',')
+        })
         if (withCommas.length > 0) {
           onConfirmCommaSplit(column.name, withCommas, () => finish(opts))
         } else {
@@ -136,7 +163,10 @@ export function ColumnHeaderMenu({
       checkCommas(choices)
       return
     }
-    void onHarvestValues().then((values) => {
+    void onHarvestValues().then((rawValues) => {
+      const values = type === 'multi_select'
+        ? rawValues.flatMap((v) => parsePastedValues(v))
+        : rawValues
       const harvested = addValues(choices, values)
       setChoices(harvested)
       checkCommas(harvested)
@@ -193,6 +223,55 @@ export function ColumnHeaderMenu({
               onSetDisplayType(current, serializeOptions(next))
             }}
           />
+        ) : null}
+
+        {current === 'linked_record' && canConfigure ? (
+          <>
+            <label class="afs-menu__label" for={`link-table-${column.name}`}>
+              Linked table
+            </label>
+            <select
+              id={`link-table-${column.name}`}
+              class="afs-menu__select"
+              data-testid="menu-link-table"
+              value={linkTable}
+              onChange={(event) => {
+                const t = (event.currentTarget as HTMLSelectElement).value
+                setLinkTable(t)
+                setLinkColumn('')
+              }}
+            >
+              <option value="">Select a table…</option>
+              {tables.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+            {linkTableColumns.length > 0 ? (
+              <>
+                <label class="afs-menu__label" for={`link-column-${column.name}`}>
+                  Match column
+                </label>
+                <select
+                  id={`link-column-${column.name}`}
+                  class="afs-menu__select"
+                  data-testid="menu-link-column"
+                  value={linkColumn}
+                  onChange={(event) => {
+                    const col = (event.currentTarget as HTMLSelectElement).value
+                    setLinkColumn(col)
+                    if (col && linkTable) {
+                      onSetDisplayType('linked_record', { targetTable: linkTable, keyColumn: col })
+                    }
+                  }}
+                >
+                  <option value="">Select a column…</option>
+                  {linkTableColumns.map((col) => (
+                    <option key={col.name} value={col.name}>{col.name}</option>
+                  ))}
+                </select>
+              </>
+            ) : null}
+          </>
         ) : null}
 
         {current === 'date' && canConfigure ? (

@@ -36,6 +36,7 @@ export type DisplayType =
   | 'percent'
   | 'duration'
   | 'rating'
+  | 'linked_record'
 
 // ---------------------------------------------------------------------------
 // Sorting and filtering
@@ -62,6 +63,10 @@ export type FilterOperator =
   | 'lt'
   | 'lte'
   | 'between'
+  // multi-select
+  | 'has_any'
+  | 'has_all'
+  | 'has_none'
   // universal
   | 'is_empty'
   | 'is_not_empty'
@@ -139,6 +144,8 @@ export interface ForeignKeyInfo {
   fromColumns: string[]
   toTable: string
   toColumns: string[]
+  /** True when this link was guessed from a `_id` naming convention, not a FOREIGN KEY clause. */
+  inferred?: boolean
 }
 
 /** A foreign key pointing *at* this table — the basis for Airtable-style reverse lookups. */
@@ -452,6 +459,7 @@ export type ProtocolRequest =
   | { type: 'get-views'; table: string }
   | { type: 'set-table-order'; order: string[] }
   | { type: 'save-view'; table: string; view: Record<string, unknown> }
+  | { type: 'reorder-views'; table: string; ids: number[] }
   | { type: 'delete-view'; viewId: number }
   | { type: 'search'; table: string; query: string; columns?: string[] }
   | { type: 'history'; table: string; rowid: number }

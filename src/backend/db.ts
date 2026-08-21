@@ -78,6 +78,18 @@ interface ForeignKeyRow {
 }
 
 /** SQLite's affinity rules, in the order the documentation specifies them. */
+function pluralize(word: string): string[] {
+  const candidates: string[] = []
+  if (word.endsWith('y') && word.length > 1 && !/[aeiou]/i.test(word[word.length - 2]!)) {
+    candidates.push(word.slice(0, -1) + 'ies')
+  }
+  if (/(?:s|x|z|ch|sh)$/.test(word)) {
+    candidates.push(word + 'es')
+  }
+  candidates.push(word + 's')
+  return candidates
+}
+
 function affinityOf(declaredType: string): ColumnInfo['affinity'] {
   const type = declaredType.toUpperCase()
   if (type.includes('INT')) return 'INTEGER'
@@ -263,6 +275,69 @@ export class Db {
       .map((c) => c.name)
   }
 
+  #labelFallbacks(table: string, primaryField: string, keyColumn: string): string[] {
+    if (!this.#tableMap().has(table)) return []
+    const skip = new Set([primaryField.toLowerCase(), keyColumn.toLowerCase()])
+    const cols = this.columns(table)
+    const nameish: string[] = []
+    const other: string[] = []
+    for (const col of cols) {
+      const lower = col.name.toLowerCase()
+      if (skip.has(lower) || col.primaryKeyIndex > 0) continue
+      if (col.affinity !== 'TEXT') continue
+      if (/name|title|label|organization|subject/.test(lower)) nameish.push(quoteIdent(col.name))
+      else other.push(quoteIdent(col.name))
+    }
+    return [...nameish, ...other.slice(0, 2)].map((c) => `NULLIF(${c}, '')`)
+  }
+
+  /**
+   * Infer foreign keys from naming conventions (`_id` suffix) for columns that have no
+   * declared FOREIGN KEY constraint. `company_id` matches a table named `company` or
+   * `companies`; the match is case-insensitive.
+   */
+  inferredForeignKeys(table: string): ForeignKeyInfo[] {
+    this.#table(table)
+    const declared = new Set(
+      this.foreignKeys(table).flatMap((fk) => fk.fromColumns.map((c) => c.toLowerCase())),
+    )
+    const tableNames = this.tables().map((t) => t.name)
+    const tableByLower = new Map(tableNames.map((n) => [n.toLowerCase(), n]))
+
+    const results: ForeignKeyInfo[] = []
+    for (const col of this.columns(table)) {
+      const lower = col.name.toLowerCase()
+      if (!lower.endsWith('_id') || declared.has(lower)) continue
+      const base = lower.slice(0, -3) // strip `_id`
+      if (!base) continue
+
+      const match = this.#matchTable(base, tableByLower)
+      if (!match || match.toLowerCase() === table.toLowerCase()) continue
+
+      const pk = this.#primaryKeyColumns(match)
+      if (pk.length !== 1) continue
+
+      results.push({
+        id: -1,
+        fromColumns: [col.name],
+        toTable: match,
+        toColumns: pk,
+        inferred: true,
+      })
+    }
+    return results
+  }
+
+  #matchTable(base: string, tableByLower: Map<string, string>): string | undefined {
+    // Exact match first, then simple English plurals.
+    if (tableByLower.has(base)) return tableByLower.get(base)
+
+    for (const plural of pluralize(base)) {
+      if (tableByLower.has(plural)) return tableByLower.get(plural)
+    }
+    return undefined
+  }
+
   /**
    * Foreign keys pointing *at* this table, found by scanning every other table. This is what
    * makes the reverse-lookup section in the detail panel possible without any configuration:
@@ -274,7 +349,7 @@ export class Db {
 
     for (const other of this.tables()) {
       if (other.name === table) continue
-      for (const fk of this.foreignKeys(other.name)) {
+      for (const fk of [...this.foreignKeys(other.name), ...this.inferredForeignKeys(other.name)]) {
         if (fk.toTable.toLowerCase() !== table.toLowerCase()) continue
         found.push({
           fromTable: other.name,
@@ -500,16 +575,18 @@ export class Db {
     const labels: LinkLabels['labels'] = []
     const key = quoteIdent(link.keyColumn)
     const display = quoteIdent(link.primaryField)
+    const fallbacks = this.#labelFallbacks(link.table, link.primaryField, link.keyColumn)
+    const labelExpr = fallbacks.length > 0
+      ? `COALESCE(NULLIF(${display}, ''), ${fallbacks.join(', ')}, ${key})`
+      : `COALESCE(NULLIF(${display}, ''), ${key})`
     const distinct = [...wanted.values()]
 
     try {
-      // Chunked to stay clear of SQLite's bound-parameter ceiling regardless of how many
-      // rows the caller has on screen.
       for (let i = 0; i < distinct.length; i += LABEL_BATCH) {
         const batch = distinct.slice(i, i + LABEL_BATCH)
         const rows = this.#conn
           .prepare(
-            `SELECT ${key} AS value, ${display} AS label FROM ${quoteIdent(link.table)}
+            `SELECT ${key} AS value, ${labelExpr} AS label FROM ${quoteIdent(link.table)}
               WHERE ${key} IN (${batch.map(() => '?').join(', ')})`,
           )
           .all(...batch.map(normalize)) as Array<{ value: SqlValue; label: SqlValue }>
@@ -558,7 +635,7 @@ export class Db {
     const searchable = requested
       ? allSearchable.filter((name) => requested.includes(name))
       : allSearchable
-    const search = compileSearch(request.search ?? '', searchable)
+    const search = compileSearch(request.search ?? '', searchable, this.linkResolver?.(table))
 
     return {
       sql: `${filter.sql} AND ${search.sql}`,
